@@ -510,3 +510,36 @@ func TestClientDisconnectMidStream(t *testing.T) {
 	}
 	t.Fatal("no usage event after disconnect")
 }
+
+func TestSimulationHeaderAndRoutes(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.AllowSimulation = true })
+	resp := f.post(t, "sk-acme", chatBody("fast", "hi", false, api.Ptr(0.0)), HeaderSimulate, "primary-down")
+	if resp.Header.Get(HeaderProvider) != "b" || resp.Header.Get(HeaderFallbacks) != "1" || resp.Header.Get(HeaderCache) != "bypass" {
+		t.Fatalf("simulated: %v", resp.Header)
+	}
+	off := newFixture(t, nil)
+	if r := off.post(t, "sk-acme", chatBody("fast", "hi", false, nil), HeaderSimulate, "primary-down"); r.Header.Get(HeaderProvider) != "a" {
+		t.Fatal("simulation must be ignored unless allowed")
+	}
+	req, _ := http.NewRequest(http.MethodGet, f.srv.URL+"/v1/routes", nil)
+	rr, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rr.Body.Close()
+	var body struct {
+		Simulation bool                           `json:"simulation"`
+		Routes     map[string][]map[string]string `json:"routes"`
+	}
+	_ = json.NewDecoder(rr.Body).Decode(&body)
+	if !body.Simulation || len(body.Routes) != 1 || body.Routes["fast"][1]["provider"] != "b" {
+		t.Fatalf("public routes: %+v", body)
+	}
+	bad, _ := http.NewRequest(http.MethodGet, f.srv.URL+"/v1/routes", nil)
+	bad.Header.Set("Authorization", "Bearer nope")
+	br, _ := http.DefaultClient.Do(bad)
+	br.Body.Close()
+	if br.StatusCode != 401 {
+		t.Fatal("bad key")
+	}
+}

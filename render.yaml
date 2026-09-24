@@ -1,0 +1,16 @@
+# Render Blueprint: one free web service running the public demo config.
+# Set GROQ_API_KEY and GEMINI_API_KEY in the dashboard (both have free tiers).
+# With neither set, the demo still runs and answers from the stub provider.
+services:
+  - type: web
+    name: modelmux
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: MODELMUX_CONFIG
+        value: /configs/demo.yaml
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

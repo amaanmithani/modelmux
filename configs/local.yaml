@@ -10,3 +10,4 @@ cache:
   semantic: {enabled: true, embedder: ollama, model: mxbai-embed-large, threshold: 0.925}
 public: {enabled: true}
 usage: {sink: stdout}
+demo: {allow_simulation: true}

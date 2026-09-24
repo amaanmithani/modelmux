@@ -73,7 +73,10 @@ type Config struct {
 	Tenants          []tenant.TenantConfig `yaml:"tenants"`
 	Public           tenant.PublicConfig   `yaml:"public"`
 	TrustedProxyHops int                   `yaml:"trusted_proxy_hops"`
-	Usage            struct {
+	Demo             struct {
+		AllowSimulation bool `yaml:"allow_simulation"`
+	} `yaml:"demo"`
+	Usage struct {
 		Sink          string `yaml:"sink"` // none | stdout | webhook
 		WebhookURLEnv string `yaml:"webhook_url_env"`
 	} `yaml:"usage"`
@@ -246,7 +249,7 @@ func (c *Config) Build(getenv func(string) string, logger *slog.Logger, stdout i
 	}
 
 	b.Server = server.New(server.Config{Router: r, Tenants: tm, Exact: exact, Semantic: sem, Sink: b.Sink,
-		Metrics: b.Metrics, Logger: logger, TrustedProxyHops: c.TrustedProxyHops})
+		Metrics: b.Metrics, Logger: logger, TrustedProxyHops: c.TrustedProxyHops, AllowSimulation: c.Demo.AllowSimulation})
 	b.Handler = b.Server.Handler()
 	return b, nil
 }

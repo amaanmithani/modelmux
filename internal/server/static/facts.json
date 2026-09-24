@@ -1,0 +1,12 @@
+{
+  "overhead_p99_ms": 0.524,
+  "overhead_p50_ms": 0.142,
+  "rps": 1996.5,
+  "fallback_recovered": 7591,
+  "fallback_recoverable": 7591,
+  "breaker_hits": 29,
+  "breaker_requests": 2000,
+  "semantic_model": "mxbai-embed-large",
+  "semantic_hit": 0.214,
+  "semantic_false": 0.01
+}

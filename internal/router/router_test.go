@@ -340,3 +340,26 @@ func TestBreakerStateMachine(t *testing.T) {
 		t.Fatal("defaults")
 	}
 }
+
+func TestSimulatedOutage(t *testing.T) {
+	r, a, b, _ := setup(t, Options{Breaker: BreakerConfig{Failures: 1}})
+	ctx := WithSimulatedOutage(context.Background(), 1)
+	_, res, err := r.Chat(ctx, req("smart"))
+	if err != nil || res.Target.Provider != "b" || res.Fallbacks != 1 || a.Calls() != 0 {
+		t.Fatalf("%+v %v calls=%d", res, err, a.Calls())
+	}
+	s, res, err := r.Stream(ctx, req("smart"))
+	if err != nil || res.Target.Provider != "b" || res.Fallbacks != 1 {
+		t.Fatalf("stream: %+v %v", res, err)
+	}
+	s.Close()
+	if r.BreakerOpen("a") {
+		t.Fatal("simulated outage must not trip the breaker")
+	}
+	if _, _, err := r.Chat(WithSimulatedOutage(context.Background(), 2), req("smart")); err == nil || b.Calls() != 2 {
+		t.Fatalf("all simulated down: %v", err)
+	}
+	if len(r.Routes()["smart"]) != 2 {
+		t.Fatal("routes")
+	}
+}

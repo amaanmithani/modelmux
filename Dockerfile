@@ -7,5 +7,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/modelmux ./cmd/mod
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/modelmux /modelmux
+COPY configs /configs
+ENV MODELMUX_CONFIG=/configs/demo.yaml
 EXPOSE 8080
 ENTRYPOINT ["/modelmux"]

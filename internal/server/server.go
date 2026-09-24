@@ -38,6 +38,9 @@ const (
 	// HeaderCacheMode is a request header: "bypass" skips caches, "force"
 	// caches a request even when it isn't deterministic (temperature != 0).
 	HeaderCacheMode = "X-ModelMux-Cache"
+	// HeaderSimulate ("primary-down") makes the first target of the chain
+	// count as failed, when the server allows simulation.
+	HeaderSimulate = "X-ModelMux-Simulate"
 )
 
 // Config wires a Server.
@@ -53,7 +56,10 @@ type Config struct {
 	// to X-Forwarded-For. 0 ignores the header and uses the socket address.
 	TrustedProxyHops int
 	MaxBodyBytes     int64
-	Now              func() time.Time
+	// AllowSimulation honours the X-ModelMux-Simulate: primary-down request
+	// header (demo deployments only).
+	AllowSimulation bool
+	Now             func() time.Time
 }
 
 // Server is the HTTP front end.
@@ -86,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", s.chat)
 	mux.HandleFunc("GET /v1/models", s.models)
+	mux.HandleFunc("GET /v1/routes", s.routes)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -142,6 +149,32 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// routes lists each alias the caller may use with its provider chain (no
+// secrets: provider names and upstream model ids only).
+func (s *Server) routes(w http.ResponseWriter, r *http.Request) {
+	p, err := s.cfg.Tenants.Authenticate(r.Header.Get("Authorization"), s.clientIP(r))
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", err.Error())
+		return
+	}
+	type target struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	out := map[string]any{"simulation": s.cfg.AllowSimulation}
+	routes := map[string][]target{}
+	for alias, ts := range s.cfg.Router.Routes() {
+		if !p.AllowsModel(alias) {
+			continue
+		}
+		for _, t := range ts {
+			routes[alias] = append(routes[alias], target{t.Provider, t.Model})
+		}
+	}
+	out["routes"] = routes
+	writeJSON(w, http.StatusOK, out)
 }
 
 // reqState carries per-request bookkeeping for the usage event and metrics.
@@ -211,6 +244,13 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	st.admitted = true
+	ctx := r.Context()
+	if s.cfg.AllowSimulation && strings.EqualFold(r.Header.Get(HeaderSimulate), "primary-down") {
+		ctx = router.WithSimulatedOutage(ctx, 1)
+		// A simulated request must neither read nor fill the cache.
+		r.Header.Set(HeaderCacheMode, "bypass")
+	}
+	r = r.WithContext(ctx)
 
 	mode := strings.ToLower(r.Header.Get(HeaderCacheMode))
 	cacheable := mode != "bypass" && (mode == "force" || cache.Cacheable(&req))

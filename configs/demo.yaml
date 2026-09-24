@@ -19,3 +19,4 @@ public:
   models: [fast, gemini-first]
 trusted_proxy_hops: 1
 usage: {sink: stdout}
+demo: {allow_simulation: true}

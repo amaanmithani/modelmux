@@ -1,4 +1,230 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ModelMux</title></head>
-<body><h1>ModelMux</h1><p>OpenAI-compatible LLM gateway. <code>POST /v1/chat/completions</code> · <code>GET /v1/models</code> · <code>GET /metrics</code></p></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ModelMux playground</title>
+<meta name="description" content="One OpenAI-compatible API in front of Groq, Gemini and more. Watch a request fall back between providers.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #EEF2EF; --panel: #F8FAF8; --ink: #1B2430; --soft: #52606D; --rule: #C9D1CB;
+  --served: #1F7A4F; --fallback: #B7791F; --failed: #B63A2E; --line: #8A96A3; --focus: #2F5DA8;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #141A20; --panel: #1B232B; --ink: #E4EAE6; --soft: #9AA7B2; --rule: #2E3943;
+    --served: #4CC08A; --fallback: #E0A84A; --failed: #E0695C; --line: #5E6B77; --focus: #7EA6E8;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 17px/1.55 Barlow, system-ui, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 48px 16px 80px; }
+h1, h2, .trace-name { font-family: "Barlow Semi Condensed", Barlow, sans-serif; }
+h1 { font-size: clamp(34px, 6vw, 52px); line-height: 1.02; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 14px; max-width: 16ch; }
+.lede { color: var(--soft); max-width: 60ch; margin: 0 0 36px; }
+.lede a, .facts a, footer a { color: inherit; text-underline-offset: 3px; }
+h2 { font-size: 22px; font-weight: 600; margin: 48px 0 12px; }
+
+form { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; }
+.controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin-bottom: 12px; }
+label { font-size: 15px; color: var(--soft); }
+select, textarea, button { font: inherit; color: var(--ink); }
+select { background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 8px; margin-left: 6px; }
+textarea { width: 100%; min-height: 96px; resize: vertical; background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; padding: 10px 12px; line-height: 1.45; }
+.check { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
+.check input { width: 18px; height: 18px; accent-color: var(--fallback); margin: 0; }
+.actions { display: flex; align-items: center; gap: 16px; margin-top: 12px; }
+button { background: var(--ink); color: var(--paper); border: 0; border-radius: 4px; padding: 10px 18px; font-weight: 600; cursor: pointer; }
+button[disabled] { opacity: .55; cursor: progress; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.hint { font-size: 14px; color: var(--soft); }
+
+/* The route trace: the chain as a signal line. */
+.trace { margin: 28px 0 8px; }
+.line { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; position: relative; }
+.line::before { content: ""; position: absolute; left: 11px; right: 11px; top: 11px; height: 2px; background: var(--line); }
+.stop { position: relative; padding-right: 8px; min-width: 0; }
+.dot { width: 24px; height: 24px; border-radius: 50%; background: var(--paper); border: 2px solid var(--line); position: relative; z-index: 1; display: grid; place-items: center; }
+.stop[data-state="served"] .dot { background: var(--served); border-color: var(--served); }
+.stop[data-state="failed"] .dot { background: var(--paper); border-color: var(--failed); }
+.stop[data-state="failed"] .dot::after { content: ""; width: 12px; height: 2px; background: var(--failed); transform: rotate(45deg); box-shadow: 0 0 0 0 var(--failed); }
+.stop[data-state="waiting"] .dot { border-color: var(--fallback); }
+.stop[data-state="waiting"] .dot::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--fallback); animation: pulse 1s ease-in-out infinite; }
+.trace-name { display: block; margin-top: 8px; font-size: 18px; font-weight: 600; }
+.trace-model { display: block; font-size: 14px; color: var(--soft); overflow-wrap: anywhere; }
+.trace-state { display: block; font-size: 14px; margin-top: 2px; }
+.stop[data-state="served"] .trace-state { color: var(--served); font-weight: 600; }
+.stop[data-state="failed"] .trace-state { color: var(--failed); }
+.stop[data-state="idle"] .trace-state { color: var(--soft); }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .stop[data-state="waiting"] .dot::after { animation: none; } }
+
+.summary { font-size: 15px; color: var(--soft); min-height: 1.5em; margin: 14px 0 0; }
+.summary strong { color: var(--ink); font-weight: 600; }
+.answer { white-space: pre-wrap; background: var(--panel); border-left: 3px solid var(--served); padding: 14px 16px; margin-top: 14px; min-height: 3em; border-radius: 0 4px 4px 0; }
+.answer:empty { display: none; }
+.answer.error { border-left-color: var(--failed); }
+pre { background: #1B2430; color: #E4EAE6; border: 1px solid var(--rule); padding: 14px 16px; border-radius: 4px; overflow-x: auto; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.facts { padding-left: 1.2em; }
+.facts li { margin: 8px 0; max-width: 64ch; }
+footer { margin-top: 56px; font-size: 14px; color: var(--soft); }
+@media (max-width: 520px) {
+  main { padding-top: 28px; }
+  .trace-name { font-size: 16px; }
+  .trace-model { display: none; }
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>One API in front of every model</h1>
+  <p class="lede">ModelMux takes the OpenAI chat API and routes each request down a chain of providers. If one is rate-limited, slow or down, the next one answers, before your first token. Send a prompt and watch the route. <a href="https://github.com/amaanmithani/modelmux">Source on GitHub</a>.</p>
+
+  <form id="f">
+    <div class="controls">
+      <label>Route <select id="model" aria-label="Route"></select></label>
+      <label class="check"><input type="checkbox" id="sim"> Simulate an outage at the first provider</label>
+    </div>
+    <textarea id="prompt" aria-label="Prompt" required>In two sentences, why do API gateways retry before the first byte but not after?</textarea>
+    <div class="actions">
+      <button id="send" type="submit">Send</button>
+      <span class="hint">Answers stream token by token. Anonymous use is limited per visitor.</span>
+    </div>
+  </form>
+
+  <div class="trace" aria-live="polite">
+    <div class="line" id="line"></div>
+    <p class="summary" id="summary"></p>
+  </div>
+  <div class="answer" id="answer"></div>
+
+  <h2>Call it from your code</h2>
+  <pre id="curl"></pre>
+
+  <h2>Measured, not claimed</h2>
+  <ul class="facts" id="facts"></ul>
+
+  <footer>Numbers come from committed benchmark scripts. <a href="https://github.com/amaanmithani/modelmux/tree/main/bench">See the benchmarks</a>.</footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let routes = {}, simAllowed = false;
+
+function renderLine(chain, states) {
+  $("line").innerHTML = "";
+  chain.forEach((t, i) => {
+    const s = states[i] || (states.length ? "idle" : "ready");
+    const label = { ready: "", idle: "not needed", waiting: "trying", failed: "failed, skipped", served: "answered" }[s];
+    const el = document.createElement("div");
+    el.className = "stop"; el.dataset.state = s;
+    el.innerHTML = `<div class="dot" aria-hidden="true"></div><span class="trace-name"></span><span class="trace-model"></span><span class="trace-state"></span>`;
+    el.querySelector(".trace-name").textContent = t.provider;
+    el.querySelector(".trace-model").textContent = t.model;
+    el.querySelector(".trace-state").textContent = label;
+    $("line").appendChild(el);
+  });
+}
+
+function curl() {
+  const origin = location.origin;
+  const sim = $("sim").checked ? ` \\\n  -H "X-ModelMux-Simulate: primary-down"` : "";
+  $("curl").textContent =
+`curl ${origin}/v1/chat/completions \\
+  -H "Authorization: Bearer public" \\
+  -H "Content-Type: application/json"${sim} \\
+  -d '{"model": "${$("model").value}", "stream": true,
+       "messages": [{"role": "user", "content": "Hello"}]}'`;
+}
+
+async function init() {
+  try {
+    const r = await fetch("/v1/routes", { headers: { Authorization: "Bearer public" } });
+    const body = await r.json();
+    routes = body.routes || {}; simAllowed = !!body.simulation;
+  } catch { routes = {}; }
+  const names = Object.keys(routes).sort();
+  $("model").innerHTML = names.map((n) => `<option>${n}</option>`).join("");
+  $("sim").closest("label").hidden = !simAllowed;
+  if (!names.length) { $("summary").textContent = "No routes are available right now."; $("send").disabled = true; }
+  else renderLine(routes[names[0]], []);
+  curl();
+  try {
+    const f = await (await fetch("facts.json")).json();
+    const pct = (x) => (x * 100).toFixed(1).replace(/\.0$/, "") + "%";
+    $("facts").innerHTML = [
+      `Adds <strong>${f.overhead_p99_ms.toFixed(2)} ms</strong> at p99 (${f.overhead_p50_ms.toFixed(2)} ms at p50) over calling the provider directly, at ${Math.round(f.rps).toLocaleString()} requests per second.`,
+      `Recovered <strong>${f.fallback_recovered.toLocaleString()} of ${f.fallback_recoverable.toLocaleString()}</strong> injected upstream failures across seven fault scenarios. With the circuit breaker on, a dead provider saw ${f.breaker_hits} of ${f.breaker_requests.toLocaleString()} requests.`,
+      `The semantic cache answers <strong>${pct(f.semantic_hit)}</strong> of true paraphrases at a ${pct(f.semantic_false)} false-hit rate (${f.semantic_model}, 1,000 labeled Quora question pairs). Embeddings alone confuse "hotels in Udaipur" with "hotels in Munnar", so hits also need matching entities.`,
+    ].map((t) => `<li>${t}</li>`).join("");
+  } catch { $("facts").closest("ul").previousElementSibling.hidden = true; }
+}
+
+$("model").addEventListener("change", () => { renderLine(routes[$("model").value] || [], []); curl(); });
+$("sim").addEventListener("change", curl);
+
+$("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const chain = routes[$("model").value] || [];
+  const answer = $("answer");
+  answer.textContent = ""; answer.classList.remove("error");
+  $("send").disabled = true;
+  $("summary").textContent = "";
+  renderLine(chain, chain.map((_, i) => (i === 0 ? "waiting" : "idle")));
+  const t0 = performance.now(); let tFirst = null;
+  const headers = { "Content-Type": "application/json", Authorization: "Bearer public" };
+  if ($("sim").checked) headers["X-ModelMux-Simulate"] = "primary-down";
+  try {
+    const res = await fetch("/v1/chat/completions", { method: "POST", headers, body: JSON.stringify({
+      model: $("model").value, stream: true, stream_options: { include_usage: true },
+      messages: [{ role: "user", content: $("prompt").value }] }) });
+    const fallbacks = parseInt(res.headers.get("X-ModelMux-Fallbacks") || "0", 10);
+    const served = res.headers.get("X-ModelMux-Provider");
+    const cache = res.headers.get("X-ModelMux-Cache") || "miss";
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      renderLine(chain, chain.map(() => "failed"));
+      answer.classList.add("error");
+      answer.textContent = (err.error && err.error.message) || `Request failed with HTTP ${res.status}.`;
+      if (res.status === 429) answer.textContent += " Wait a moment and send again.";
+      return;
+    }
+    const servedIdx = chain.findIndex((t) => t.provider === served);
+    renderLine(chain, chain.map((_, i) => (i < servedIdx ? "failed" : i === servedIdx ? "served" : "idle")));
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "", usage = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const ev = buf.slice(0, i); buf = buf.slice(i + 2);
+        const data = ev.replace(/^data: /, "");
+        if (data === "[DONE]") continue;
+        let c; try { c = JSON.parse(data); } catch { continue; }
+        if (c.error) { answer.classList.add("error"); answer.textContent += `\n\n${c.error.message}`; continue; }
+        if (c.usage) usage = c.usage;
+        const piece = c.choices && c.choices[0] && c.choices[0].delta && c.choices[0].delta.content;
+        if (piece) { if (tFirst === null) tFirst = performance.now(); answer.textContent += piece; }
+      }
+    }
+    const total = Math.round(performance.now() - t0), first = tFirst ? Math.round(tFirst - t0) : total;
+    const parts = [`Answered by <strong>${served || "cache"}</strong>`];
+    if (fallbacks) parts.push(`after ${fallbacks} failed ${fallbacks === 1 ? "attempt" : "attempts"}`);
+    parts.push(`first token in ${first} ms, done in ${total} ms`);
+    if (cache !== "miss" && cache !== "bypass") parts.push(`served from the ${cache} cache`);
+    if (usage) parts.push(`${usage.total_tokens} tokens`);
+    $("summary").innerHTML = parts.join(", ") + ".";
+  } catch (err) {
+    answer.classList.add("error");
+    answer.textContent = `Couldn't reach ModelMux: ${err.message}. Check your connection and send again.`;
+    renderLine(chain, []);
+  } finally { $("send").disabled = false; }
+});
+init();
+</script>
+</body>
+</html>

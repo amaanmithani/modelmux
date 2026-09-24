@@ -134,6 +134,29 @@ func (r *Router) Aliases() []string {
 	return out
 }
 
+type simKey struct{}
+
+// WithSimulatedOutage marks the first n targets of the chain as failed for
+// this request only: they are not called, don't touch breakers, and count as
+// fallbacks. Used by the public demo to show fallback on demand.
+func WithSimulatedOutage(ctx context.Context, n int) context.Context {
+	return context.WithValue(ctx, simKey{}, n)
+}
+
+func simulated(ctx context.Context, i int) bool {
+	n, _ := ctx.Value(simKey{}).(int)
+	return i < n
+}
+
+// Routes returns every alias with its chain.
+func (r *Router) Routes() map[string][]Target {
+	out := make(map[string][]Target, len(r.routes))
+	for a, ts := range r.routes {
+		out[a] = append([]Target(nil), ts...)
+	}
+	return out
+}
+
 // Result describes how a request was served.
 type Result struct {
 	Target    Target
@@ -148,7 +171,12 @@ func (r *Router) Chat(ctx context.Context, req *api.ChatRequest) (*api.ChatRespo
 	}
 	var lastErr error
 	fallbacks := 0
-	for _, t := range chain {
+	for i, t := range chain {
+		if simulated(ctx, i) {
+			lastErr = &provider.UpstreamError{Provider: t.Provider, Status: 503, Message: "simulated outage"}
+			fallbacks++
+			continue
+		}
 		b := r.breakers[t.Provider]
 		if !b.Allow() {
 			continue
@@ -189,7 +217,12 @@ func (r *Router) Stream(ctx context.Context, req *api.ChatRequest) (provider.Str
 	}
 	var lastErr error
 	fallbacks := 0
-	for _, t := range chain {
+	for i, t := range chain {
+		if simulated(ctx, i) {
+			lastErr = &provider.UpstreamError{Provider: t.Provider, Status: 503, Message: "simulated outage"}
+			fallbacks++
+			continue
+		}
 		b := r.breakers[t.Provider]
 		if !b.Allow() {
 			continue

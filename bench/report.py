@@ -64,6 +64,20 @@ lines += [
     f"Scan cost at capacity (2,000 entries × 1,024 dims, flat inner product): **{lookup_ms:.2f} ms** per lookup "
     "(`go test -bench SemanticLookup ./internal/cache`), small next to the embedding call itself.",
 ]
+# Facts for the playground page, from the same JSON.
+best = max((m for m in se["models"] if m["guarded"]["recommended"]),
+           key=lambda m: m["guarded"]["recommended"]["hit_rate_on_duplicates"])
+facts = {
+    "overhead_p99_ms": o["p99"], "overhead_p50_ms": o["p50"], "rps": ov["achieved_rps"]["gateway"],
+    "fallback_recovered": sum(s["recovered"] for s in fa["scenarios"]),
+    "fallback_recoverable": sum(s["recoverable_failures"] for s in fa["scenarios"]),
+    "breaker_hits": next(s["upstream_requests_to_a"] for s in fa["scenarios"] if s["name"] == "a-down-breaker-on"),
+    "breaker_requests": next(s["requests"] for s in fa["scenarios"] if s["name"] == "a-down-breaker-on"),
+    "semantic_model": best["model"], "semantic_hit": best["guarded"]["recommended"]["hit_rate_on_duplicates"],
+    "semantic_false": best["guarded"]["recommended"]["false_hit_rate_on_non_duplicates"],
+}
+(Path(__file__).resolve().parent.parent / "internal/server/static/facts.json").write_text(json.dumps(facts, indent=2) + "\n")
+
 readme = Path(__file__).resolve().parent.parent / "README.md"
 text = readme.read_text()
 block = "<!-- RESULTS:START -->\n" + "\n".join(lines) + "\n<!-- RESULTS:END -->"
