@@ -66,6 +66,41 @@ func (c Content) Text() string {
 	return sb.String()
 }
 
+// Part is one element of array-form content.
+type Part struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL *struct {
+		URL string `json:"url"`
+	} `json:"image_url,omitempty"`
+}
+
+// Parts returns the content as typed parts: a plain string becomes one text
+// part.
+func (c Content) Parts() []Part {
+	if c.IsNull() {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(c.raw, &s); err == nil {
+		return []Part{{Type: "text", Text: s}}
+	}
+	var parts []Part
+	_ = json.Unmarshal(c.raw, &parts)
+	return parts
+}
+
+// HasNonText reports whether the content includes anything but text
+// (images, audio, files).
+func (c Content) HasNonText() bool {
+	for _, p := range c.Parts() {
+		if p.Type != "text" {
+			return true
+		}
+	}
+	return false
+}
+
 // Message is one chat message.
 type Message struct {
 	Role       string     `json:"role"`
@@ -246,6 +281,10 @@ func NewError(typ, code, msg string) ErrorBody {
 // Ptr returns a pointer to v.
 func Ptr[T any](v T) *T { return &v }
 
+// MaxChoices bounds the choice index accepted from an upstream stream, so a
+// malformed chunk can't panic the handler or grow memory without limit.
+const MaxChoices = 16
+
 // Accumulator folds streaming chunks into a complete ChatResponse. It is used
 // to populate the cache and usage accounting from streamed completions.
 type Accumulator struct {
@@ -271,6 +310,9 @@ func (a *Accumulator) Add(c *ChatChunk) {
 		a.resp.Usage = &u
 	}
 	for _, ch := range c.Choices {
+		if ch.Index < 0 || ch.Index >= MaxChoices {
+			continue
+		}
 		for len(a.resp.Choices) <= ch.Index {
 			a.resp.Choices = append(a.resp.Choices, Choice{Index: len(a.resp.Choices), Message: Message{Role: "assistant"}})
 		}
@@ -286,6 +328,9 @@ func (a *Accumulator) Add(c *ChatChunk) {
 			idx := i
 			if tc.Index != nil {
 				idx = *tc.Index
+			}
+			if idx < 0 || idx >= 128 {
+				continue
 			}
 			m := a.tools[ch.Index]
 			if m == nil {

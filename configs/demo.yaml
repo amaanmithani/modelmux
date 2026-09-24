@@ -8,7 +8,7 @@ providers:
 routes:
   - {alias: fast, targets: [groq/llama-3.1-8b-instant, gemini/gemini-2.5-flash, stub/fallback]}
   - {alias: gemini-first, targets: [gemini/gemini-2.5-flash, groq/llama-3.1-8b-instant, stub/fallback]}
-timeouts: {request: 60s, first_byte: 10s}
+timeouts: {request: 60s, first_byte: 10s, stream: 120s}
 breaker: {failures: 3, cooldown: 30s}
 cache:
   exact: {enabled: true, capacity: 5000, ttl: 6h}
@@ -16,7 +16,12 @@ public:
   enabled: true
   rpm_per_ip: 10
   daily_tokens_per_ip: 20000
+  max_output_tokens: 512
+  max_prompt_chars: 8000
+  global_rpm: 30              # below Groq's free-tier limit, across all visitors
+  global_daily_tokens: 400000
   models: [fast, gemini-first]
 trusted_proxy_hops: 1
 usage: {sink: stdout}
 demo: {allow_simulation: true}
+metrics: {require_key: true}

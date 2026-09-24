@@ -156,9 +156,9 @@ async function init() {
     const f = await (await fetch("facts.json")).json();
     const pct = (x) => (x * 100).toFixed(1).replace(/\.0$/, "") + "%";
     $("facts").innerHTML = [
-      `Adds <strong>${f.overhead_p99_ms.toFixed(2)} ms</strong> at p99 (${f.overhead_p50_ms.toFixed(2)} ms at p50) over calling the provider directly, at ${Math.round(f.rps).toLocaleString()} requests per second.`,
-      `Recovered <strong>${f.fallback_recovered.toLocaleString()} of ${f.fallback_recoverable.toLocaleString()}</strong> injected upstream failures across seven fault scenarios. With the circuit breaker on, a dead provider saw ${f.breaker_hits} of ${f.breaker_requests.toLocaleString()} requests.`,
-      `The semantic cache answers <strong>${pct(f.semantic_hit)}</strong> of true paraphrases at a ${pct(f.semantic_false)} false-hit rate (${f.semantic_model}, 1,000 labeled Quora question pairs). Embeddings alone confuse "hotels in Udaipur" with "hotels in Munnar", so hits also need matching entities.`,
+      `Adds <strong>${f.overhead_p99_ms.toFixed(2)} ms</strong> at p99 (${f.overhead_p99_min_ms.toFixed(2)}–${f.overhead_p99_max_ms.toFixed(2)} ms across runs) at ${Math.round(f.rps).toLocaleString()} requests per second, measured against a local ${f.stub_latency} stub so only the gateway's own cost shows.`,
+      `${f.fallback_all_recovered ? "Every" : "Not every"} request that could be recovered was recovered, across ${f.fallback_scenarios} injected-fault scenarios, each run three times. Streams that break after their first byte can't be retried by anyone: ${f.midstream_unrecoverable_pct}% in that scenario. With the circuit breaker on, a dead provider saw ${f.breaker_hits_min}–${f.breaker_hits_max} of ${f.breaker_requests.toLocaleString()} requests.`,
+      `The semantic cache (${f.semantic_model}, threshold picked on separate data) answered <strong>${pct(f.semantic_hit)}</strong> of held-out paraphrases and gave a wrong answer to ${pct(f.semantic_wrong)} of lookups. Useful, but far from the claims usually made for semantic caching, so it's off by default.`,
     ].map((t) => `<li>${t}</li>`).join("");
   } catch { $("facts").closest("ul").previousElementSibling.hidden = true; }
 }

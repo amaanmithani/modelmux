@@ -20,11 +20,12 @@ export const options = {
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
 };
 
+const STREAM = __ENV.STREAM === '1';
 const body = JSON.stringify({
-  model: __ENV.MODEL || 'bench',
+  model: __ENV.MODEL || 'bench', stream: STREAM,
   messages: [{ role: 'user', content: 'Say something short.' }],
 });
-const params = { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer public' } };
+const params = { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (__ENV.KEY || 'public') } };
 
 export default function () {
   const res = http.post(TARGET, body, params);
@@ -32,9 +33,11 @@ export default function () {
 }
 
 export function handleSummary(data) {
-  const d = data.metrics.http_req_duration.values;
+  // Streaming runs report time to first byte (http_req_waiting); JSON runs
+  // report the full request duration.
+  const d = (STREAM ? data.metrics.http_req_waiting : data.metrics.http_req_duration).values;
   const out = {
-    label: LABEL, target_rps: RATE, duration: DURATION,
+    label: LABEL, target_rps: RATE, duration: DURATION, metric: STREAM ? 'time_to_first_byte' : 'request_duration',
     achieved_rps: data.metrics.http_reqs.values.rate,
     requests: data.metrics.http_reqs.values.count,
     failed_rate: data.metrics.http_req_failed.values.rate,

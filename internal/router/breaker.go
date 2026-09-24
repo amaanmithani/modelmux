@@ -40,45 +40,61 @@ func NewBreaker(cfg BreakerConfig, now func() time.Time) *Breaker {
 }
 
 // Allow reports whether a request may be sent. When the cooldown has elapsed
-// on an open breaker, exactly one caller is let through as a probe.
-func (b *Breaker) Allow() bool {
+// on an open breaker, exactly one caller is let through as a probe; probe is
+// true for that caller only. The caller must report the outcome with the same
+// probe flag.
+func (b *Breaker) Allow() (ok, probe bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.open {
-		return true
+		return true, false
 	}
 	if b.probing || b.now().Sub(b.openedAt) < b.cfg.Cooldown {
-		return false
+		return false, false
 	}
 	b.probing = true
-	return true
+	return true, true
 }
 
-// Success records a successful call and closes the breaker.
-func (b *Breaker) Success() {
+// Success records a successful call. While the breaker is open, only the
+// probe's result counts: a request sent before the breaker opened says
+// nothing about the provider's health now.
+func (b *Breaker) Success(probe bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.open && !probe {
+		return
+	}
 	b.failures, b.open, b.probing = 0, false, false
 }
 
-// Failure records a failed call; it opens (or re-opens) the breaker when the
-// threshold is reached or a half-open probe fails.
-func (b *Breaker) Failure() {
+// Failure records a failed call; it opens the breaker at the threshold, and
+// re-opens it when the probe fails. Stale failures while open are ignored.
+func (b *Breaker) Failure(probe bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.failures++
-	if b.probing || b.failures >= b.cfg.Failures {
-		b.open, b.probing, b.openedAt = true, false, b.now()
+	switch {
+	case b.open && probe:
+		b.probing, b.openedAt = false, b.now()
+	case b.open:
+		// stale: sent before the breaker opened
+	default:
+		b.failures++
+		if b.failures >= b.cfg.Failures {
+			b.open, b.openedAt = true, b.now()
+		}
 	}
 }
 
-// Release ends a half-open probe that produced no verdict about upstream
-// health (client cancelled, or a client-side request error), so a later
-// request can probe instead.
-func (b *Breaker) Release() {
+// Release ends a probe that produced no verdict about upstream health
+// (client cancelled, or a client-side request error), so another request can
+// probe. Only the probe itself can release the slot.
+func (b *Breaker) Release(probe bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.probing = false
+	if probe {
+		b.probing = false
+	}
 }
 
 // Open reports whether the breaker is open (including half-open).

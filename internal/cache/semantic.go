@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"container/list"
 	"context"
 	"math"
 	"regexp"
@@ -28,6 +29,11 @@ func SemanticQuery(req *api.ChatRequest) (string, bool) {
 		switch m.Role {
 		case "system", "developer":
 		case "user":
+			// Images etc. aren't embedded; two questions about different
+			// images would look identical.
+			if m.Content.HasNonText() {
+				return "", false
+			}
 			users++
 			q = m.Content.Text()
 		default:
@@ -94,6 +100,7 @@ type semEntry struct {
 }
 
 type semScope struct {
+	key     string
 	entries []semEntry
 	next    int // ring-buffer write position once full
 }
@@ -109,8 +116,11 @@ type Semantic struct {
 	now       func() time.Time
 	guard     bool
 
-	mu     sync.RWMutex
-	scopes map[string]*semScope
+	maxScopes int
+
+	mu     sync.Mutex
+	scopes map[string]*list.Element // of *semScope, most recently used at front
+	lru    *list.List
 }
 
 // SemanticConfig configures a Semantic cache.
@@ -124,6 +134,9 @@ type SemanticConfig struct {
 	// DisableGuard turns off the lexical guard (GuardKey). Only for
 	// measurement: without it, entity-swapped questions get wrong answers.
 	DisableGuard bool
+	// MaxScopes bounds the number of scopes (tenant × model × system prompt ×
+	// params); the least recently used scope is evicted. Default 1000.
+	MaxScopes int
 }
 
 // NewSemantic returns a semantic cache.
@@ -137,8 +150,12 @@ func NewSemantic(c SemanticConfig) *Semantic {
 	if c.Now == nil {
 		c.Now = time.Now
 	}
+	if c.MaxScopes <= 0 {
+		c.MaxScopes = 1000
+	}
 	return &Semantic{emb: c.Embedder, model: c.Model, threshold: c.Threshold, capacity: c.Capacity,
-		ttl: c.TTL, now: c.Now, guard: !c.DisableGuard, scopes: map[string]*semScope{}}
+		ttl: c.TTL, now: c.Now, guard: !c.DisableGuard, maxScopes: c.MaxScopes,
+		scopes: map[string]*list.Element{}, lru: list.New()}
 }
 
 // Match is the result of a lookup.
@@ -160,12 +177,14 @@ func (s *Semantic) Lookup(ctx context.Context, scope, query string) (Match, erro
 	g := GuardKey(query)
 	m := Match{Vec: v, Similarity: -1}
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	sc := s.scopes[scope]
-	if sc == nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	el := s.scopes[scope]
+	if el == nil {
 		return m, nil
 	}
+	s.lru.MoveToFront(el)
+	sc := el.Value.(*semScope)
 	best := -1
 	for i := range sc.entries {
 		e := &sc.entries[i]
@@ -190,10 +209,18 @@ func (s *Semantic) Put(scope string, vec []float32, query string, resp *api.Chat
 	e := semEntry{vec: vec, guard: GuardKey(query), query: query, resp: resp, expires: s.now().Add(s.ttl)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sc := s.scopes[scope]
-	if sc == nil {
-		sc = &semScope{}
-		s.scopes[scope] = sc
+	var sc *semScope
+	if el := s.scopes[scope]; el != nil {
+		s.lru.MoveToFront(el)
+		sc = el.Value.(*semScope)
+	} else {
+		sc = &semScope{key: scope}
+		s.scopes[scope] = s.lru.PushFront(sc)
+		for s.lru.Len() > s.maxScopes {
+			old := s.lru.Back()
+			s.lru.Remove(old)
+			delete(s.scopes, old.Value.(*semScope).key)
+		}
 	}
 	if len(sc.entries) < s.capacity {
 		sc.entries = append(sc.entries, e)
@@ -201,6 +228,13 @@ func (s *Semantic) Put(scope string, vec []float32, query string, resp *api.Chat
 	}
 	sc.entries[sc.next] = e
 	sc.next = (sc.next + 1) % s.capacity
+}
+
+// Scopes returns the number of live scopes.
+func (s *Semantic) Scopes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lru.Len()
 }
 
 // Threshold returns the configured similarity threshold.

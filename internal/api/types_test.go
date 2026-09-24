@@ -137,3 +137,25 @@ func TestNewError(t *testing.T) {
 		t.Fatal("empty code should be null")
 	}
 }
+
+func TestAccumulatorIgnoresBadIndexes(t *testing.T) {
+	var a Accumulator
+	a.Add(&ChatChunk{Choices: []ChunkChoice{{Index: -1, FinishReason: Ptr("stop")}}})
+	a.Add(&ChatChunk{Choices: []ChunkChoice{{Index: 1 << 30, Delta: Delta{Content: Ptr("x")}}}})
+	a.Add(&ChatChunk{Choices: []ChunkChoice{{Delta: Delta{ToolCalls: []ToolCall{{Index: Ptr(-3)}}}}}})
+	if r := a.Response(); len(r.Choices) != 1 {
+		t.Fatalf("choices: %d", len(r.Choices))
+	}
+}
+
+func TestParts(t *testing.T) {
+	var c Content
+	_ = json.Unmarshal([]byte(`[{"type":"text","text":"a"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QQ=="}}]`), &c)
+	ps := c.Parts()
+	if len(ps) != 2 || ps[1].ImageURL.URL == "" || !c.HasNonText() {
+		t.Fatalf("%+v", ps)
+	}
+	if TextContent("x").HasNonText() || len((Content{}).Parts()) != 0 {
+		t.Fatal("text-only")
+	}
+}

@@ -1,8 +1,12 @@
 # Overhead benchmark: one fixed-latency stub upstream over real HTTP, caches off.
+# The "bench" tenant exercises the rate-limit and budget code paths (limits set
+# far above the load so they never reject).
 listen: "127.0.0.1:8080"
 providers:
   - {name: stub, type: openai, base_url: "http://127.0.0.1:9090/v1"}
 routes:
   - {alias: bench, targets: [stub/stub-model]}
+tenants:
+  - {name: bench, key_sha256: b0962662e937d44c699c8305d90cbf190b3150c59b13863d1380b5cc3c711bb7, rpm: 100000000, monthly_tokens: 1000000000000}
 public: {enabled: true}
 usage: {sink: none}

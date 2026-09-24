@@ -59,7 +59,9 @@ type Config struct {
 	// AllowSimulation honours the X-ModelMux-Simulate: primary-down request
 	// header (demo deployments only).
 	AllowSimulation bool
-	Now             func() time.Time
+	// MetricsRequireKey makes /metrics require a tenant (non-public) key.
+	MetricsRequireKey bool
+	Now               func() time.Time
 }
 
 // Server is the HTTP front end.
@@ -96,7 +98,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.Handle("GET /metrics", promhttp.HandlerFor(s.cfg.Metrics.Registry, promhttp.HandlerOpts{}))
+	metrics := promhttp.HandlerFor(s.cfg.Metrics.Registry, promhttp.HandlerOpts{})
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.MetricsRequireKey {
+			p, err := s.cfg.Tenants.Authenticate(r.Header.Get("Authorization"), s.clientIP(r))
+			if err != nil || p.Public() {
+				writeErr(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "a tenant API key is required")
+				return
+			}
+		}
+		metrics.ServeHTTP(w, r)
+	})
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /", http.FileServer(http.FS(sub)))
 	return mux
@@ -188,6 +200,7 @@ type reqState struct {
 	result    router.Result
 	resp      *api.ChatResponse
 	admitted  bool // passed auth, validation and limits; only these emit usage
+	reserved  int64
 }
 
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +215,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	st.principal = p
 
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/json") {
+		// Also blocks cross-site form/text POSTs from spending a visitor's quota.
+		st.status = http.StatusUnsupportedMediaType
+		writeErr(w, st.status, "invalid_request_error", "unsupported_media_type", "Content-Type must be application/json")
+		return
+	}
 	var req api.ChatRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes))
 	if err := dec.Decode(&req); err != nil {
@@ -220,13 +239,26 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, st.status, "invalid_request_error", "model_not_found", err.Error())
 		return
 	}
-	st.model = req.Model
 	if !p.AllowsModel(req.Model) {
 		st.status = http.StatusForbidden
 		writeErr(w, st.status, "invalid_request_error", "model_not_allowed", tenant.ErrModelDenied.Error())
 		return
 	}
-	if err := p.Admit(); err != nil {
+	st.model = s.modelLabel(req.Model)
+	promptChars := contentChars(&req)
+	if lim := p.MaxPromptChars(); lim > 0 && promptChars > lim {
+		st.status = http.StatusRequestEntityTooLarge
+		writeErr(w, st.status, "invalid_request_error", "prompt_too_large",
+			fmt.Sprintf("prompt is %d characters; the limit for this key is %d", promptChars, lim))
+		return
+	}
+	if lim := p.MaxOutputTokens(); lim > 0 {
+		if n := req.MaxOutputTokens(); n <= 0 || n > lim {
+			req.MaxTokens, req.MaxCompletionTokens = api.Ptr(lim), nil
+		}
+	}
+	st.reserved = int64((promptChars+3)/4 + req.MaxOutputTokens())
+	if err := p.Admit(st.reserved); err != nil {
 		var le *tenant.LimitError
 		if errors.As(err, &le) {
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(le.RetryAfter.Seconds()))))
@@ -253,6 +285,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 
 	mode := strings.ToLower(r.Header.Get(HeaderCacheMode))
+	if mode == "force" && p.Public() {
+		mode = "" // anonymous callers can't pin non-deterministic answers into the shared cache
+	}
 	cacheable := mode != "bypass" && (mode == "force" || cache.Cacheable(&req))
 	if mode == "bypass" {
 		st.cache = "bypass"
@@ -390,7 +425,45 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, st *reqState, st
 	store(st.resp)
 }
 
+// modelLabel bounds metric-label cardinality: aliases are configured, and
+// direct provider/model names collapse to their provider.
+func (s *Server) modelLabel(model string) string {
+	for _, a := range s.cfg.Router.Aliases() {
+		if a == model {
+			return model
+		}
+	}
+	if t, err := router.ParseTarget(model); err == nil {
+		return "direct:" + t.Provider
+	}
+	return "unknown"
+}
+
+// contentChars measures the prompt: text length, plus a flat 4,000
+// characters (~1,000 tokens) per non-text part such as an image.
+func contentChars(req *api.ChatRequest) int {
+	n := 0
+	for _, m := range req.Messages {
+		for _, part := range m.Content.Parts() {
+			if part.Type == "text" {
+				n += len(part.Text)
+			} else {
+				n += 4000
+			}
+		}
+		for _, tc := range m.ToolCalls {
+			n += len(tc.Function.Arguments)
+		}
+	}
+	return n
+}
+
 func (s *Server) upstreamErr(w http.ResponseWriter, st *reqState, err error) {
+	if st.principal != nil && st.principal.Public() {
+		// Upstream error text can include account ids and quota details.
+		s.cfg.Logger.Warn("upstream error", "err", err)
+		err = publicErr{err}
+	}
 	var ue *provider.UpstreamError
 	switch {
 	case errors.Is(err, router.ErrNoHealthyTarget):
@@ -403,22 +476,29 @@ func (s *Server) upstreamErr(w http.ResponseWriter, st *reqState, err error) {
 		case ue.Status == http.StatusBadRequest || ue.Status == http.StatusUnprocessableEntity ||
 			ue.Status == http.StatusRequestEntityTooLarge:
 			st.status = ue.Status
-			writeErr(w, st.status, "invalid_request_error", "upstream_rejected", ue.Error())
+			writeErr(w, st.status, "invalid_request_error", "upstream_rejected", err.Error())
 		case ue.Status == http.StatusTooManyRequests:
 			st.status = http.StatusTooManyRequests
-			writeErr(w, st.status, "rate_limit_error", "upstream_rate_limited", ue.Error())
+			writeErr(w, st.status, "rate_limit_error", "upstream_rate_limited", err.Error())
 		case ue.Status == 0 && errors.Is(ue.Err, context.DeadlineExceeded):
 			st.status = http.StatusGatewayTimeout
-			writeErr(w, st.status, "server_error", "upstream_timeout", ue.Error())
+			writeErr(w, st.status, "server_error", "upstream_timeout", err.Error())
 		default:
 			st.status = http.StatusBadGateway
-			writeErr(w, st.status, "server_error", "upstream_error", ue.Error())
+			writeErr(w, st.status, "server_error", "upstream_error", err.Error())
 		}
 	default:
 		st.status = http.StatusBadGateway
 		writeErr(w, st.status, "server_error", "upstream_error", err.Error())
 	}
 }
+
+// publicErr keeps an upstream error's type (for status mapping) but hides
+// its message from anonymous callers.
+type publicErr struct{ inner error }
+
+func (e publicErr) Error() string { return "the upstream provider returned an error" }
+func (e publicErr) Unwrap() error { return e.inner }
 
 // finish records metrics and emits the usage event.
 func (s *Server) finish(st *reqState) {
@@ -440,9 +520,11 @@ func (s *Server) finish(st *reqState) {
 			ev.PromptTokens, ev.CompletionTokens, ev.Estimated = estimateTokens(st.req, st.resp)
 		}
 	}
+	used := 0
 	if st.cache != "exact" && st.cache != "semantic" {
-		st.principal.Charge(ev.PromptTokens + ev.CompletionTokens)
+		used = ev.PromptTokens + ev.CompletionTokens
 	}
+	st.principal.Settle(st.reserved, used)
 	if ev.PromptTokens+ev.CompletionTokens > 0 {
 		s.cfg.Metrics.tokens.WithLabelValues(ev.Tenant, "prompt").Add(float64(ev.PromptTokens))
 		s.cfg.Metrics.tokens.WithLabelValues(ev.Tenant, "completion").Add(float64(ev.CompletionTokens))
@@ -455,10 +537,7 @@ func (s *Server) finish(st *reqState) {
 // estimateTokens approximates token counts at ~4 characters per token when
 // the upstream reports no usage. Events carry Estimated=true in that case.
 func estimateTokens(req *api.ChatRequest, resp *api.ChatResponse) (int, int, bool) {
-	in, out := 0, 0
-	for _, m := range req.Messages {
-		in += len(m.Content.Text())
-	}
+	in, out := contentChars(req), 0
 	for _, c := range resp.Choices {
 		out += len(c.Message.Content.Text())
 		for _, tc := range c.Message.ToolCalls {

@@ -47,8 +47,11 @@ func run(ctx context.Context, path string, getenv func(string) string, logger *s
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: b.Handler, ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout: 120 * time.Second} // no WriteTimeout: responses stream
+	// ReadTimeout bounds reading the whole request (a slow-trickled body can't
+	// hold a connection); there is no WriteTimeout because responses stream.
+	// Stream lifetime is bounded by the router's stream timeout instead.
+	srv := &http.Server{Handler: b.Handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+		IdleTimeout: 120 * time.Second}
 	errc := make(chan error, 1)
 	go func() {
 		logger.Info("modelmux listening", "addr", ln.Addr().String(), "routes", b.Router.Aliases(), "skipped", b.Skipped)

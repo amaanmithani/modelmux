@@ -186,8 +186,8 @@ func TestBreakerSkipsOpenProviderAndRecovers(t *testing.T) {
 	}
 	callsA := a.Calls()
 	_, res, _ := r.Chat(context.Background(), req("smart"))
-	if a.Calls() != callsA || res.Fallbacks != 0 || res.Target.Provider != "b" {
-		t.Fatal("open breaker should skip a without counting a fallback")
+	if a.Calls() != callsA || res.Fallbacks != 1 || res.Target.Provider != "b" {
+		t.Fatal("open breaker should skip a (without calling it) and count the skip as a fallback")
 	}
 	now = now.Add(2 * time.Minute) // cooldown over: one probe
 	_, res, _ = r.Chat(context.Background(), req("smart"))
@@ -306,33 +306,45 @@ func (emptyStream) Close() error                  { return nil }
 func TestBreakerStateMachine(t *testing.T) {
 	now := time.Unix(0, 0)
 	b := NewBreaker(BreakerConfig{Failures: 2, Cooldown: 10 * time.Second}, func() time.Time { return now })
-	b.Failure()
-	if b.Open() || !b.Allow() {
+	allow := func() (bool, bool) { return b.Allow() }
+	b.Failure(false)
+	if ok, _ := allow(); b.Open() || !ok {
 		t.Fatal("one failure should not open")
 	}
-	b.Failure()
-	if !b.Open() || b.Allow() {
+	b.Failure(false)
+	if ok, _ := allow(); !b.Open() || ok {
 		t.Fatal("two failures should open")
 	}
 	now = now.Add(11 * time.Second)
-	if !b.Allow() {
-		t.Fatal("cooldown elapsed: probe allowed")
+	ok, probe := allow()
+	if !ok || !probe {
+		t.Fatal("cooldown elapsed: one probe allowed")
 	}
-	if b.Allow() {
+	if ok, _ := allow(); ok {
 		t.Fatal("only one probe at a time")
 	}
-	b.Release()
-	if !b.Allow() {
+	b.Release(false) // a stale, non-probe request finishing must not free the slot
+	if ok, _ := allow(); ok {
+		t.Fatal("stale release freed the probe slot")
+	}
+	b.Success(false) // stale success must not close an open breaker
+	if !b.Open() {
+		t.Fatal("stale success closed the breaker")
+	}
+	b.Failure(false) // stale failure must not push the cooldown
+	b.Release(true)
+	ok, probe = allow()
+	if !ok || !probe {
 		t.Fatal("released probe slot should be reusable")
 	}
-	b.Failure() // failed probe re-opens immediately
-	if !b.Open() || b.Allow() {
+	b.Failure(true) // failed probe re-opens
+	if ok, _ := allow(); !b.Open() || ok {
 		t.Fatal("failed probe should re-open")
 	}
 	now = now.Add(11 * time.Second)
-	b.Allow()
-	b.Success()
-	if b.Open() || !b.Allow() {
+	_, probe = allow()
+	b.Success(probe)
+	if ok, _ := allow(); b.Open() || !ok {
 		t.Fatal("successful probe should close")
 	}
 	d := NewBreaker(BreakerConfig{}, nil)
@@ -340,6 +352,69 @@ func TestBreakerStateMachine(t *testing.T) {
 		t.Fatal("defaults")
 	}
 }
+
+func TestBreakerSkipCountsAsFallback(t *testing.T) {
+	r, a, _, o := setup(t, Options{Breaker: BreakerConfig{Failures: 1, Cooldown: time.Hour}})
+	a.FailNext(e503)
+	if _, res, _ := r.Chat(context.Background(), req("smart")); res.Fallbacks != 1 {
+		t.Fatal("first")
+	}
+	_, res, _ := r.Chat(context.Background(), req("smart"))
+	if res.Fallbacks != 1 || res.Target.Provider != "b" || o.fallbacks != 2 {
+		t.Fatalf("skip over open breaker must count: %+v obs=%d", res, o.fallbacks)
+	}
+	s, res, _ := r.Stream(context.Background(), req("smart"))
+	if res.Fallbacks != 1 {
+		t.Fatalf("stream skip: %+v", res)
+	}
+	s.Close()
+}
+
+func TestStreamTimeoutBoundsWholeStream(t *testing.T) {
+	stall := &stallProvider{}
+	r2, err := New([]provider.Provider{stall}, map[string][]Target{"m": {{"stall", "x"}}}, Options{StreamTimeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _, err := r2.Stream(context.Background(), req("m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.Recv(); err != nil {
+		t.Fatal("first chunk")
+	}
+	start := time.Now()
+	if _, err := st.Recv(); err == nil || time.Since(start) > time.Second {
+		t.Fatalf("stalled stream should end at the stream timeout: %v after %s", err, time.Since(start))
+	}
+}
+
+// stallProvider sends one chunk, then blocks until its context ends.
+type stallProvider struct{}
+
+func (stallProvider) Name() string { return "stall" }
+func (stallProvider) Chat(context.Context, *api.ChatRequest) (*api.ChatResponse, error) {
+	return nil, errors.New("unused")
+}
+func (stallProvider) Stream(ctx context.Context, _ *api.ChatRequest) (provider.Stream, error) {
+	return &stallStream{ctx: ctx}, nil
+}
+
+type stallStream struct {
+	ctx  context.Context
+	sent bool
+}
+
+func (s *stallStream) Recv() (*api.ChatChunk, error) {
+	if !s.sent {
+		s.sent = true
+		return &api.ChatChunk{Choices: []api.ChunkChoice{{Delta: api.Delta{Content: api.Ptr("x")}}}}, nil
+	}
+	<-s.ctx.Done()
+	return nil, s.ctx.Err()
+}
+func (s *stallStream) Close() error { return nil }
 
 func TestSimulatedOutage(t *testing.T) {
 	r, a, b, _ := setup(t, Options{Breaker: BreakerConfig{Failures: 1}})

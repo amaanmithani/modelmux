@@ -50,6 +50,7 @@ type Config struct {
 	Timeouts  struct {
 		Request   time.Duration `yaml:"request"`
 		FirstByte time.Duration `yaml:"first_byte"`
+		Stream    time.Duration `yaml:"stream"` // whole streaming response; default 5m
 	} `yaml:"timeouts"`
 	Breaker struct {
 		Failures int           `yaml:"failures"`
@@ -76,6 +77,9 @@ type Config struct {
 	Demo             struct {
 		AllowSimulation bool `yaml:"allow_simulation"`
 	} `yaml:"demo"`
+	Metrics struct {
+		RequireKey bool `yaml:"require_key"`
+	} `yaml:"metrics"`
 	Usage struct {
 		Sink          string `yaml:"sink"` // none | stdout | webhook
 		WebhookURLEnv string `yaml:"webhook_url_env"`
@@ -198,7 +202,7 @@ func (c *Config) Build(getenv func(string) string, logger *slog.Logger, stdout i
 	}
 
 	r, err := router.New(provs, routes, router.Options{
-		Timeout: c.Timeouts.Request, FirstByteTimeout: c.Timeouts.FirstByte,
+		Timeout: c.Timeouts.Request, FirstByteTimeout: c.Timeouts.FirstByte, StreamTimeout: c.Timeouts.Stream,
 		Breaker:  router.BreakerConfig{Failures: c.Breaker.Failures, Cooldown: c.Breaker.Cooldown},
 		Observer: b.Metrics,
 	})
@@ -249,7 +253,8 @@ func (c *Config) Build(getenv func(string) string, logger *slog.Logger, stdout i
 	}
 
 	b.Server = server.New(server.Config{Router: r, Tenants: tm, Exact: exact, Semantic: sem, Sink: b.Sink,
-		Metrics: b.Metrics, Logger: logger, TrustedProxyHops: c.TrustedProxyHops, AllowSimulation: c.Demo.AllowSimulation})
+		Metrics: b.Metrics, Logger: logger, TrustedProxyHops: c.TrustedProxyHops, AllowSimulation: c.Demo.AllowSimulation,
+		MetricsRequireKey: c.Metrics.RequireKey})
 	b.Handler = b.Server.Handler()
 	return b, nil
 }

@@ -62,9 +62,12 @@ type Options struct {
 	// FirstByteTimeout bounds how long a streaming attempt may take to
 	// produce its first chunk before we fall back.
 	FirstByteTimeout time.Duration
-	Breaker          BreakerConfig
-	Observer         Observer
-	Now              func() time.Time
+	// StreamTimeout bounds a whole streaming response, so a stalled
+	// upstream can't hold a connection forever.
+	StreamTimeout time.Duration
+	Breaker       BreakerConfig
+	Observer      Observer
+	Now           func() time.Time
 }
 
 // Router routes requests.
@@ -82,6 +85,9 @@ func New(providers []provider.Provider, routes map[string][]Target, opt Options)
 	}
 	if opt.FirstByteTimeout <= 0 {
 		opt.FirstByteTimeout = 20 * time.Second
+	}
+	if opt.StreamTimeout <= 0 {
+		opt.StreamTimeout = 5 * time.Minute
 	}
 	if opt.Observer == nil {
 		opt.Observer = nopObserver{}
@@ -178,7 +184,12 @@ func (r *Router) Chat(ctx context.Context, req *api.ChatRequest) (*api.ChatRespo
 			continue
 		}
 		b := r.breakers[t.Provider]
-		if !b.Allow() {
+		ok, probe := b.Allow()
+		if !ok {
+			// Skipping an open breaker is a fallback too: the request
+			// didn't get its first choice.
+			fallbacks++
+			r.opt.Observer.Fallback(req.Model)
 			continue
 		}
 		up := req.Clone()
@@ -188,11 +199,11 @@ func (r *Router) Chat(ctx context.Context, req *api.ChatRequest) (*api.ChatRespo
 		resp, err := r.providers[t.Provider].Chat(actx, up)
 		cancel()
 		if err == nil {
-			r.record(t.Provider, b, nil, r.opt.Now().Sub(start))
+			r.record(t.Provider, b, probe, nil, r.opt.Now().Sub(start))
 			return resp, Result{Target: t, Fallbacks: fallbacks}, nil
 		}
 		err = normalizeCtxErr(ctx, t.Provider, err)
-		r.record(t.Provider, b, err, 0)
+		r.record(t.Provider, b, probe, err, 0)
 		if !provider.Fallbackable(err) {
 			return nil, Result{Target: t, Fallbacks: fallbacks}, err
 		}
@@ -224,21 +235,24 @@ func (r *Router) Stream(ctx context.Context, req *api.ChatRequest) (provider.Str
 			continue
 		}
 		b := r.breakers[t.Provider]
-		if !b.Allow() {
+		ok, probe := b.Allow()
+		if !ok {
+			fallbacks++
+			r.opt.Observer.Fallback(req.Model)
 			continue
 		}
 		up := req.Clone()
 		up.Model = t.Model
 		start := r.opt.Now()
-		actx, cancel := context.WithCancel(ctx)
+		actx, cancel := context.WithTimeout(ctx, r.opt.StreamTimeout)
 		first, s, err := r.firstChunk(actx, t, up)
 		if err == nil {
-			r.record(t.Provider, b, nil, r.opt.Now().Sub(start))
+			r.record(t.Provider, b, probe, nil, r.opt.Now().Sub(start))
 			return &committedStream{first: first, s: s, cancel: cancel}, Result{Target: t, Fallbacks: fallbacks}, nil
 		}
 		cancel()
 		err = normalizeCtxErr(ctx, t.Provider, err)
-		r.record(t.Provider, b, err, 0)
+		r.record(t.Provider, b, probe, err, 0)
 		if !provider.Fallbackable(err) {
 			return nil, Result{Target: t, Fallbacks: fallbacks}, err
 		}
@@ -306,21 +320,21 @@ func (r *Router) firstChunk(ctx context.Context, t Target, req *api.ChatRequest)
 	}
 }
 
-func (r *Router) record(name string, b *Breaker, err error, firstByte time.Duration) {
+func (r *Router) record(name string, b *Breaker, probe bool, err error, firstByte time.Duration) {
 	outcome := "ok"
 	switch {
 	case err == nil:
-		b.Success()
+		b.Success(probe)
 	case errors.Is(err, context.Canceled):
 		outcome = "canceled"
-		b.Release()
+		b.Release(probe)
 	case provider.Fallbackable(err):
 		outcome = "error"
-		b.Failure()
+		b.Failure(probe)
 	default:
 		// Client errors say nothing about upstream health.
 		outcome = "client_error"
-		b.Release()
+		b.Release(probe)
 	}
 	r.opt.Observer.Attempt(name, outcome, firstByte)
 	r.opt.Observer.BreakerState(name, b.Open())

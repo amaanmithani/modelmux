@@ -13,20 +13,23 @@ ulimit -n 65536 2>/dev/null || ulimit -n 10240 || true
 MODELMUX_CONFIG=configs/bench.yaml "$BIN/modelmux" >/dev/null 2>"$BIN/mm.log" & MM=$!
 trap 'kill $STUB $MM 2>/dev/null; rm -rf "$BIN"' EXIT
 for _ in $(seq 50); do curl -sf 127.0.0.1:8080/healthz >/dev/null && curl -s 127.0.0.1:9090 >/dev/null && break; sleep 0.1; done
-# Warm-up both paths so connection pools are established.
-k6 run -q -e TARGET=http://127.0.0.1:9090/v1/chat/completions -e RATE=200 -e DURATION=5s -e OUT=/dev/null bench/overhead.js >/dev/null
-k6 run -q -e TARGET=http://127.0.0.1:8080/v1/chat/completions -e RATE=200 -e DURATION=5s -e OUT=/dev/null bench/overhead.js >/dev/null
+DIRECT=http://127.0.0.1:9090/v1/chat/completions
+GW=http://127.0.0.1:8080/v1/chat/completions
+# name|url|key|stream
+VARIANTS="direct-json|$DIRECT|public|0 gateway-json|$GW|public|0 gateway-json-tenant|$GW|bench-key|0 direct-stream|$DIRECT|public|1 gateway-stream|$GW|public|1"
+# Warm-up so connection pools are established.
+for v in $VARIANTS; do IFS='|' read -r name url key stream <<< "$v"
+  k6 run -q -e TARGET=$url -e KEY=$key -e STREAM=$stream -e RATE=200 -e DURATION=5s -e OUT=/dev/null bench/overhead.js >/dev/null
+done
 for r in $(seq "$ROUNDS"); do
-  for target in direct gateway; do
-    url=http://127.0.0.1:9090/v1/chat/completions
-    [ "$target" = gateway ] && url=http://127.0.0.1:8080/v1/chat/completions
-    echo "round $r: $target"
-    if [ "$target" = gateway ]; then
+  for v in $VARIANTS; do IFS='|' read -r name url key stream <<< "$v"
+    echo "round $r: $name"
+    if [ "$name" = gateway-json ]; then
       ( while kill -0 $MM 2>/dev/null; do ps -o rss=,%cpu= -p $MM >> bench/results/overhead-proc.tmp; sleep 1; done ) & SAMPLER=$!
     fi
-    k6 run -q -e TARGET=$url -e RATE="$RATE" -e DURATION="$DURATION" -e LABEL="$target-$r" \
-      -e OUT="bench/results/overhead-$target-$r.tmp.json" bench/overhead.js >/dev/null
-    if [ "$target" = gateway ]; then kill $SAMPLER 2>/dev/null || true; fi
+    k6 run -q -e TARGET=$url -e KEY=$key -e STREAM=$stream -e RATE="$RATE" -e DURATION="$DURATION" -e LABEL="$name-$r" \
+      -e OUT="bench/results/overhead-$name-$r.tmp.json" bench/overhead.js >/dev/null
+    if [ "$name" = gateway-json ]; then kill $SAMPLER 2>/dev/null || true; fi
   done
 done
 python3 bench/aggregate_overhead.py "$ROUNDS" "$RATE" "$DURATION" "$LATENCY" > bench/results/overhead.json

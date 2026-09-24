@@ -255,3 +255,45 @@ func TestAnthropicDefaults(t *testing.T) {
 		t.Fatal("defaults")
 	}
 }
+
+func TestAnthropicImages(t *testing.T) {
+	var c api.Content
+	_ = json.Unmarshal([]byte(`[{"type":"text","text":"compare"},
+		{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}},
+		{"type":"image_url","image_url":{"url":"https://example.com/cat.jpg"}}]`), &c)
+	ar, err := toAnthropic(&api.ChatRequest{Messages: []api.Message{{Role: "user", Content: c}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bl := ar.Messages[0].Content
+	if len(bl) != 3 || bl[1].Source.Type != "base64" || bl[1].Source.MediaType != "image/png" || bl[1].Source.Data != "AAAA" ||
+		bl[2].Source.Type != "url" || bl[2].Source.URL != "https://example.com/cat.jpg" {
+		t.Fatalf("blocks: %+v", bl)
+	}
+	for _, bad := range []string{`[{"type":"input_audio"}]`, `[{"type":"image_url","image_url":{"url":"data:text/plain,hi"}}]`,
+		`[{"type":"image_url"}]`} {
+		var bc api.Content
+		_ = json.Unmarshal([]byte(bad), &bc)
+		p := NewAnthropic(AnthropicConfig{Name: "a", BaseURL: "http://127.0.0.1:1"})
+		_, err := p.Chat(context.Background(), &api.ChatRequest{Messages: []api.Message{{Role: "user", Content: bc}}})
+		var ue *UpstreamError
+		if !errors.As(err, &ue) || ue.Status != 501 || !Fallbackable(err) {
+			t.Errorf("%s: want fallbackable 501, got %v", bad, err)
+		}
+	}
+}
+
+func TestAnthropicErrorRightAfterStartIsBeforeFirstChunk(t *testing.T) {
+	p := anthServer(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\n"+
+			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}\n\n")
+	})
+	s, err := p.Stream(context.Background(), userReq("m", "x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Recv(); !Fallbackable(err) {
+		t.Fatalf("first Recv should be the overload error (fallbackable), got %v", err)
+	}
+}

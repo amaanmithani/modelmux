@@ -1,12 +1,17 @@
 {
-  "overhead_p99_ms": 0.524,
-  "overhead_p50_ms": 0.142,
-  "rps": 1996.5,
-  "fallback_recovered": 7591,
-  "fallback_recoverable": 7591,
-  "breaker_hits": 29,
+  "overhead_p99_ms": 0.585,
+  "overhead_p99_min_ms": 0.408,
+  "overhead_p99_max_ms": 2.672,
+  "overhead_p50_ms": 0.138,
+  "rps": 1996.6,
+  "stub_latency": "50ms",
+  "fallback_scenarios": 6,
+  "fallback_all_recovered": true,
+  "midstream_unrecoverable_pct": 14.9,
+  "breaker_hits_min": 23,
+  "breaker_hits_max": 32,
   "breaker_requests": 2000,
   "semantic_model": "mxbai-embed-large",
-  "semantic_hit": 0.214,
-  "semantic_false": 0.01
+  "semantic_hit": 0.144,
+  "semantic_wrong": 0.004
 }

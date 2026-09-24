@@ -118,6 +118,7 @@ type result struct {
 
 func main() {
 	n := flag.Int("n", 2000, "requests per scenario")
+	repeats := flag.Int("repeats", 3, "independent runs per scenario (different seeds)")
 	workers := flag.Int("c", 32, "concurrent clients")
 	out := flag.String("out", "bench/results/faults.json", "output file")
 	flag.Parse()
@@ -131,16 +132,35 @@ func main() {
 		{Name: "both-dead", Description: "control: no healthy target exists", ADown: true, BDown: true, Breaker: "on"},
 		{Name: "midstream", Description: "a drops 30% of streams after the first chunk (not recoverable by design: bytes already sent)", Mode: string(midStream), FaultRate: 0.3, Breaker: "off"},
 	}
-	var results []result
-	for _, s := range scenarios {
-		r := run(s, *n, *workers)
-		fmt.Fprintf(os.Stderr, "%-10s success %.4f  recovered %d/%d  a-hits %d  p99 %.1fms\n",
-			r.Name, r.SuccessRate, r.Recovered, r.Recoverable, r.UpstreamHitsA, r.LatencyP99Ms)
-		results = append(results, r)
+	var results []summary
+	failed := false
+	for si, s := range scenarios {
+		sum := summary{scenario: s}
+		for rep := 0; rep < *repeats; rep++ {
+			r := run(s, *n, *workers, int64(1000*si+rep+1))
+			fmt.Fprintf(os.Stderr, "%-20s run %d: success %.4f recovered %d/%d a-hits %d transport-errors %d p99 %.1fms\n",
+				r.Name, rep+1, r.SuccessRate, r.Recovered, r.Recoverable, r.UpstreamHitsA, r.StatusCodes["transport_error"], r.LatencyP99Ms)
+			if s.Name != "both-dead" && r.StatusCodes["transport_error"] > 0 {
+				fmt.Fprintf(os.Stderr, "INVALID RUN: %s had client transport errors (benchmark harness problem, not a gateway result)\n", s.Name)
+				failed = true
+			}
+			if r.Recovered > r.Recoverable {
+				fmt.Fprintf(os.Stderr, "INVALID RUN: %s recovered more than was recoverable\n", s.Name)
+				failed = true
+			}
+			sum.Runs = append(sum.Runs, r)
+		}
+		sum.fill()
+		results = append(results, sum)
+	}
+	if failed {
+		os.Exit(1)
 	}
 	b, _ := json.MarshalIndent(map[string]any{
-		"what":      "fallback correctness under injected upstream faults",
-		"method":    fmt.Sprintf("%d requests per scenario (half streaming), %d concurrent clients, real HTTP end to end; chain = [a, b]", *n, *workers),
+		"what": "fallback correctness under injected upstream faults",
+		"method": fmt.Sprintf("%d requests per run (half streaming), %d concurrent clients, real HTTP end to end, chain = [a, b], "+
+			"%d runs per scenario with different fault seeds. recoverable = requests a did not serve (it failed, hung or its "+
+			"breaker was open) minus streams that failed after their first byte; recovered = served by b", *n, *workers, *repeats),
 		"date":      time.Now().Format("2006-01-02"),
 		"scenarios": results,
 	}, "", "  ")
@@ -156,9 +176,47 @@ func deadURL() string {
 	return "http://" + addr + "/v1"
 }
 
-func run(s scenario, n, workers int) result {
-	a := &faulty{h: stub.Handler(reply, 0), mode: faultMode(s.Mode), p: s.FaultRate, rng: rand.New(rand.NewSource(42))}
-	b := &faulty{h: stub.Handler(reply, 0), rng: rand.New(rand.NewSource(7))}
+// summary aggregates repeated runs of one scenario.
+type summary struct {
+	scenario
+	Runs            []result `json:"runs"`
+	SuccessMin      float64  `json:"success_rate_min"`
+	SuccessMax      float64  `json:"success_rate_max"`
+	AllRecovered    bool     `json:"every_recoverable_request_recovered"`
+	RecoverableMin  int64    `json:"recoverable_min"`
+	RecoverableMax  int64    `json:"recoverable_max"`
+	UnrecoverableMn int      `json:"unrecoverable_midstream_min"`
+	UnrecoverableMx int      `json:"unrecoverable_midstream_max"`
+	HitsAMin        int64    `json:"upstream_requests_to_a_min"`
+	HitsAMax        int64    `json:"upstream_requests_to_a_max"`
+	P99Min          float64  `json:"latency_p99_ms_min"`
+	P99Max          float64  `json:"latency_p99_ms_max"`
+}
+
+func (s *summary) fill() {
+	s.AllRecovered = true
+	for i, r := range s.Runs {
+		if i == 0 {
+			s.SuccessMin, s.SuccessMax = r.SuccessRate, r.SuccessRate
+			s.RecoverableMin, s.RecoverableMax = r.Recoverable, r.Recoverable
+			s.UnrecoverableMn, s.UnrecoverableMx = r.InBandStreamError, r.InBandStreamError
+			s.HitsAMin, s.HitsAMax = r.UpstreamHitsA, r.UpstreamHitsA
+			s.P99Min, s.P99Max = r.LatencyP99Ms, r.LatencyP99Ms
+		}
+		s.SuccessMin, s.SuccessMax = min(s.SuccessMin, r.SuccessRate), max(s.SuccessMax, r.SuccessRate)
+		s.RecoverableMin, s.RecoverableMax = min(s.RecoverableMin, r.Recoverable), max(s.RecoverableMax, r.Recoverable)
+		s.UnrecoverableMn, s.UnrecoverableMx = min(s.UnrecoverableMn, r.InBandStreamError), max(s.UnrecoverableMx, r.InBandStreamError)
+		s.HitsAMin, s.HitsAMax = min(s.HitsAMin, r.UpstreamHitsA), max(s.HitsAMax, r.UpstreamHitsA)
+		s.P99Min, s.P99Max = min(s.P99Min, r.LatencyP99Ms), max(s.P99Max, r.LatencyP99Ms)
+		if r.Recovered != r.Recoverable {
+			s.AllRecovered = false
+		}
+	}
+}
+
+func run(s scenario, n, workers int, seed int64) result {
+	a := &faulty{h: stub.Handler(reply, 0), mode: faultMode(s.Mode), p: s.FaultRate, rng: rand.New(rand.NewSource(seed))}
+	b := &faulty{h: stub.Handler(reply, 0), rng: rand.New(rand.NewSource(seed + 7))}
 	aURL, bURL := deadURL(), deadURL()
 	if !s.ADown {
 		sa := httptest.NewServer(a)
@@ -200,7 +258,11 @@ public: {enabled: true}
 	lat := make([]float64, 0, n)
 	jobs := make(chan int)
 	var wg sync.WaitGroup
-	client := &http.Client{Timeout: 10 * time.Second}
+	// One pooled transport sized for the worker count: the default keeps two
+	// idle connections per host, and the resulting churn caused client-side
+	// errors that were the harness's fault, not the gateway's.
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		MaxIdleConns: 4 * workers, MaxIdleConnsPerHost: 2 * workers, IdleConnTimeout: 30 * time.Second}}
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
@@ -246,15 +308,11 @@ public: {enabled: true}
 	res.SuccessRate = float64(res.Succeeded) / float64(n)
 	res.InjectedInStreams = a.faultStream.Load()
 	res.InjectedFaults, res.UpstreamHitsA, res.UpstreamHitsB = a.fault.Load(), a.hits.Load(), b.hits.Load()
-	// Recoverable: requests a did not serve (it failed, hung, or its breaker
-	// was open) while a healthy b existed. Mid-stream drops are excluded: bytes
-	// had already reached the client, so no gateway can retry them.
+	// Recoverable: requests a did not serve (failed, hung, or skipped by its
+	// open breaker), minus streams that failed after their first byte, which
+	// no gateway can retry. Only meaningful when b is up.
 	if !s.BDown {
-		if s.Mode == string(midStream) {
-			res.Recoverable = a.fault.Load() - a.faultStream.Load()
-		} else {
-			res.Recoverable = int64(n - res.ServedBy["a"])
-		}
+		res.Recoverable = int64(n - res.ServedBy["a"] - res.InBandStreamError)
 		res.Recovered = int64(res.ServedBy["b"])
 	}
 	return res

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -83,6 +84,7 @@ func (f *fixture) post(t *testing.T, key string, body any, hdr ...string) *http.
 	if s, ok := body.(string); ok {
 		req, _ = http.NewRequest(http.MethodPost, f.srv.URL+"/v1/chat/completions", strings.NewReader(s))
 	}
+	req.Header.Set("Content-Type", "application/json")
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
@@ -490,6 +492,7 @@ func TestClientDisconnectMidStream(t *testing.T) {
 	b, _ := json.Marshal(chatBody("other", "hi", true, nil))
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, f.srv.URL+"/v1/chat/completions", strings.NewReader(string(b)))
 	req.Header.Set("Authorization", "Bearer sk-acme")
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -541,5 +544,80 @@ func TestSimulationHeaderAndRoutes(t *testing.T) {
 	br.Body.Close()
 	if br.StatusCode != 401 {
 		t.Fatal("bad key")
+	}
+}
+
+func TestSecurityHardening(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.MetricsRequireKey = true })
+
+	// Non-JSON content type is refused (blocks cross-site text/plain POSTs).
+	req, _ := http.NewRequest(http.MethodPost, f.srv.URL+"/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "text/plain")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("text/plain: %d", resp.StatusCode)
+	}
+
+	// Public prompts are size-capped and max_tokens is clamped to 512.
+	if r := f.post(t, "", chatBody("fast", strings.Repeat("x", 17000), false, nil)); r.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("big prompt: %d", r.StatusCode)
+	}
+	body := chatBody("fast", "hi", false, nil)
+	body["max_tokens"] = 1000000
+	f.post(t, "", body)
+	if got := f.a.LastRequest().MaxOutputTokens(); got != 512 {
+		t.Fatalf("public max_tokens clamped to %d, want 512", got)
+	}
+	f.post(t, "", chatBody("fast", "hi", false, nil))
+	if got := f.a.LastRequest().MaxOutputTokens(); got != 512 {
+		t.Fatalf("public unset max_tokens should default to the cap, got %d", got)
+	}
+
+	// Public callers can't force-cache non-deterministic answers.
+	f.post(t, "", chatBody("fast", "force me", false, api.Ptr(0.9)), HeaderCacheMode, "force")
+	if r := f.post(t, "", chatBody("fast", "force me", false, api.Ptr(0.9)), HeaderCacheMode, "force"); r.Header.Get(HeaderCache) != "miss" {
+		t.Fatal("public force caching must be ignored")
+	}
+
+	// Public callers see a generic upstream error; tenants see details.
+	f.a.FailNext(&provider.UpstreamError{Provider: "a", Status: 400, Message: "org_123 quota detail"})
+	e := decode[api.ErrorBody](t, f.post(t, "", chatBody("fast", "hi", false, nil)).Body)
+	if strings.Contains(e.Error.Message, "org_123") {
+		t.Fatalf("leaked upstream detail to public: %q", e.Error.Message)
+	}
+	f.a.FailNext(&provider.UpstreamError{Provider: "a", Status: 400, Message: "org_123 quota detail"})
+	e = decode[api.ErrorBody](t, f.post(t, "sk-acme", chatBody("fast", "hi", false, nil)).Body)
+	if !strings.Contains(e.Error.Message, "org_123") {
+		t.Fatalf("tenant should see the upstream detail: %q", e.Error.Message)
+	}
+
+	// Denied or direct model names don't mint metric series.
+	for i := 0; i < 20; i++ {
+		f.post(t, "", chatBody(fmt.Sprintf("a/random-%d", i), "x", false, nil))
+	}
+	f.post(t, "sk-acme", chatBody("b/whatever", "x", false, nil))
+	get := func(key string) (int, string) {
+		r, _ := http.NewRequest(http.MethodGet, f.srv.URL+"/metrics", nil)
+		if key != "" {
+			r.Header.Set("Authorization", "Bearer "+key)
+		}
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, _ := get(""); code != 401 {
+		t.Fatalf("metrics without key: %d", code)
+	}
+	if code, _ := get("public"); code != 401 {
+		t.Fatal("metrics with the public placeholder key")
+	}
+	code, m := get("sk-acme")
+	if code != 200 || strings.Contains(m, "random-") || !strings.Contains(m, `model="direct:b"`) {
+		t.Fatalf("metric labels: %d\n%s", code, m)
 	}
 }

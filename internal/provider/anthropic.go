@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,8 +55,16 @@ func NewAnthropic(c AnthropicConfig) *Anthropic {
 // Name implements Provider.
 func (p *Anthropic) Name() string { return p.name }
 
+type anthSource struct {
+	Type      string `json:"type"` // base64 | url
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
 type anthBlock struct {
 	Type      string          `json:"type"`
+	Source    *anthSource     `json:"source,omitempty"`
 	Text      string          `json:"text,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
@@ -101,6 +110,45 @@ type anthResp struct {
 	Usage      anthUsage   `json:"usage"`
 }
 
+// errUnsupportedPart marks content this adapter can't express (audio, files).
+// It maps to a fallbackable 501 so another provider can take the request.
+type errUnsupportedPart struct{ typ string }
+
+func (e errUnsupportedPart) Error() string {
+	return fmt.Sprintf("anthropic adapter: unsupported content part %q", e.typ)
+}
+
+// contentBlocks translates OpenAI content parts, in order, to Anthropic blocks.
+func contentBlocks(c api.Content) ([]anthBlock, error) {
+	var out []anthBlock
+	for _, p := range c.Parts() {
+		switch p.Type {
+		case "text":
+			if p.Text != "" {
+				out = append(out, anthBlock{Type: "text", Text: p.Text})
+			}
+		case "image_url":
+			if p.ImageURL == nil || p.ImageURL.URL == "" {
+				return nil, errUnsupportedPart{typ: "image_url without url"}
+			}
+			u := p.ImageURL.URL
+			if rest, ok := strings.CutPrefix(u, "data:"); ok {
+				meta, data, found := strings.Cut(rest, ",")
+				media, isB64 := strings.CutSuffix(meta, ";base64")
+				if !found || !isB64 {
+					return nil, errUnsupportedPart{typ: "non-base64 data URL"}
+				}
+				out = append(out, anthBlock{Type: "image", Source: &anthSource{Type: "base64", MediaType: media, Data: data}})
+			} else {
+				out = append(out, anthBlock{Type: "image", Source: &anthSource{Type: "url", URL: u}})
+			}
+		default:
+			return nil, errUnsupportedPart{typ: p.Type}
+		}
+	}
+	return out, nil
+}
+
 // toAnthropic translates an OpenAI request. It returns an error for requests
 // that cannot be expressed (e.g. no messages after removing system prompts).
 func toAnthropic(req *api.ChatRequest) (*anthReq, error) {
@@ -125,9 +173,11 @@ func toAnthropic(req *api.ChatRequest) (*anthReq, error) {
 			continue
 		case "user":
 			role = "user"
-			if t := m.Content.Text(); t != "" {
-				blocks = append(blocks, anthBlock{Type: "text", Text: t})
+			bs, err := contentBlocks(m.Content)
+			if err != nil {
+				return nil, err
 			}
+			blocks = append(blocks, bs...)
 		case "assistant":
 			role = "assistant"
 			if t := m.Content.Text(); t != "" {
@@ -228,11 +278,20 @@ func (p *Anthropic) post(ctx context.Context, body *anthReq) (*http.Response, er
 	return resp, nil
 }
 
+func (p *Anthropic) translateErr(err error) error {
+	status := http.StatusBadRequest
+	var up errUnsupportedPart
+	if errors.As(err, &up) {
+		status = http.StatusNotImplemented // another provider may support it
+	}
+	return &UpstreamError{Provider: p.name, Status: status, Message: err.Error()}
+}
+
 // Chat implements Provider.
 func (p *Anthropic) Chat(ctx context.Context, req *api.ChatRequest) (*api.ChatResponse, error) {
 	ar, err := toAnthropic(req)
 	if err != nil {
-		return nil, &UpstreamError{Provider: p.name, Status: http.StatusBadRequest, Message: err.Error()}
+		return nil, p.translateErr(err)
 	}
 	ar.Stream = false
 	resp, err := p.post(ctx, ar)
@@ -272,7 +331,7 @@ func (p *Anthropic) Chat(ctx context.Context, req *api.ChatRequest) (*api.ChatRe
 func (p *Anthropic) Stream(ctx context.Context, req *api.ChatRequest) (Stream, error) {
 	ar, err := toAnthropic(req)
 	if err != nil {
-		return nil, &UpstreamError{Provider: p.name, Status: http.StatusBadRequest, Message: err.Error()}
+		return nil, p.translateErr(err)
 	}
 	ar.Stream = true
 	resp, err := p.post(ctx, ar)
@@ -293,6 +352,18 @@ type anthStream struct {
 	usage   anthUsage
 	toolIdx map[int]int // Anthropic content-block index -> OpenAI tool_calls index
 	done    bool
+	// roleSent: the assistant role rides on the first real chunk rather than
+	// a chunk of its own, so an error arriving right after message_start
+	// happens before the first byte and can still fall back.
+	roleSent bool
+}
+
+func (s *anthStream) push(c *api.ChatChunk) {
+	if !s.roleSent && len(c.Choices) > 0 {
+		c.Choices[0].Delta.Role = "assistant"
+		s.roleSent = true
+	}
+	s.queue = append(s.queue, c)
 }
 
 func (s *anthStream) chunk() *api.ChatChunk {
@@ -352,9 +423,6 @@ func (s *anthStream) step() error {
 	case "message_start":
 		s.id, s.model, s.created = "chatcmpl-"+ev.Message.ID, ev.Message.Model, s.p.now().Unix()
 		s.usage.InputTokens = ev.Message.Usage.InputTokens
-		c := s.chunk()
-		c.Choices = []api.ChunkChoice{{Delta: api.Delta{Role: "assistant", Content: api.Ptr("")}}}
-		s.queue = append(s.queue, c)
 	case "content_block_start":
 		if ev.ContentBlock.Type == "tool_use" {
 			idx := len(s.toolIdx)
@@ -362,11 +430,11 @@ func (s *anthStream) step() error {
 			c := s.chunk()
 			c.Choices = []api.ChunkChoice{{Delta: api.Delta{ToolCalls: []api.ToolCall{{Index: api.Ptr(idx),
 				ID: ev.ContentBlock.ID, Type: "function", Function: api.FunctionCall{Name: ev.ContentBlock.Name}}}}}}
-			s.queue = append(s.queue, c)
+			s.push(c)
 		} else if ev.ContentBlock.Type == "text" && ev.ContentBlock.Text != "" {
 			c := s.chunk()
 			c.Choices = []api.ChunkChoice{{Delta: api.Delta{Content: api.Ptr(ev.ContentBlock.Text)}}}
-			s.queue = append(s.queue, c)
+			s.push(c)
 		}
 	case "content_block_delta":
 		c := s.chunk()
@@ -383,7 +451,7 @@ func (s *anthStream) step() error {
 		default:
 			return nil // thinking/signature deltas are not exposed
 		}
-		s.queue = append(s.queue, c)
+		s.push(c)
 	case "message_delta":
 		s.usage.OutputTokens = ev.Usage.OutputTokens
 		if ev.Usage.InputTokens > 0 {
@@ -396,7 +464,8 @@ func (s *anthStream) step() error {
 		u.Choices = []api.ChunkChoice{}
 		u.Usage = &api.Usage{PromptTokens: s.usage.InputTokens, CompletionTokens: s.usage.OutputTokens,
 			TotalTokens: s.usage.InputTokens + s.usage.OutputTokens}
-		s.queue = append(s.queue, c, u)
+		s.push(c)
+		s.queue = append(s.queue, u)
 	case "message_stop":
 		s.done = true
 	case "error":

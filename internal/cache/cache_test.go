@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -258,5 +259,32 @@ func TestDotMatchesNaive(t *testing.T) {
 		if got := float64(dot(a, b)); got-want > 1e-3 || want-got > 1e-3 {
 			t.Fatalf("n=%d: dot=%v want %v", n, got, want)
 		}
+	}
+}
+
+func TestSemanticScopesBounded(t *testing.T) {
+	s := NewSemantic(SemanticConfig{Embedder: &provider.Fake{}, Threshold: 0.9, MaxScopes: 3})
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		sc := fmt.Sprint("scope", i)
+		m, _ := s.Lookup(ctx, sc, "what is x")
+		s.Put(sc, m.Vec, "what is x", resp("x"))
+	}
+	if s.Scopes() != 3 {
+		t.Fatalf("scopes %d", s.Scopes())
+	}
+	if m, _ := s.Lookup(ctx, "scope49", "what is x"); m.Resp == nil {
+		t.Fatal("most recent scope evicted")
+	}
+	if m, _ := s.Lookup(ctx, "scope0", "what is x"); m.Resp != nil {
+		t.Fatal("oldest scope survived")
+	}
+}
+
+func TestSemanticSkipsImages(t *testing.T) {
+	var c api.Content
+	_ = json.Unmarshal([]byte(`[{"type":"text","text":"what is in this image"},{"type":"image_url","image_url":{"url":"x"}}]`), &c)
+	if _, ok := SemanticQuery(req(api.Message{Role: "user", Content: c})); ok {
+		t.Fatal("image questions must not use the semantic cache")
 	}
 }
