@@ -3,8 +3,12 @@ package cache
 import (
 	"context"
 	"math"
+	"regexp"
+	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/amaanmithani/modelmux/internal/api"
 	"github.com/amaanmithani/modelmux/internal/provider"
@@ -46,8 +50,44 @@ func SemanticScope(tenant string, req *api.ChatRequest) string {
 	return Key("sem|"+tenant, r)
 }
 
+var tokenRE = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9'\-.]*`)
+
+// GuardKey is a lexical fingerprint two queries must share for a semantic hit:
+// the leading word (question type: what/how/where...) plus the set of
+// named-entity-like tokens (capitalised words after the first, and anything
+// containing a digit). Embeddings score entity swaps ("hotels in Udaipur" vs
+// "hotels in Munnar") as near-identical; this guard rejects them.
+// See bench/results/semantic.json for the measured effect.
+func GuardKey(q string) string {
+	toks := tokenRE.FindAllString(q, -1)
+	if len(toks) == 0 {
+		return ""
+	}
+	// Leading word, with contractions folded ("what's" -> "what").
+	lead, _, _ := strings.Cut(strings.ToLower(toks[0]), "'")
+	ents := map[string]bool{}
+	for i, t := range toks {
+		t = strings.Trim(t, "'-.")
+		if t == "" {
+			continue
+		}
+		hasDigit := strings.IndexFunc(t, unicode.IsDigit) >= 0
+		capitalised := i > 0 && unicode.IsUpper(rune(t[0])) && t != "I"
+		if hasDigit || capitalised {
+			ents[strings.ToLower(t)] = true
+		}
+	}
+	keys := make([]string, 0, len(ents))
+	for k := range ents {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return lead + "|" + strings.Join(keys, ",")
+}
+
 type semEntry struct {
 	vec     []float32 // unit-normalised
+	guard   string
 	query   string
 	resp    *api.ChatResponse
 	expires time.Time
@@ -67,6 +107,7 @@ type Semantic struct {
 	capacity  int
 	ttl       time.Duration
 	now       func() time.Time
+	guard     bool
 
 	mu     sync.RWMutex
 	scopes map[string]*semScope
@@ -80,6 +121,9 @@ type SemanticConfig struct {
 	Capacity  int     // entries per scope; oldest overwritten first
 	TTL       time.Duration
 	Now       func() time.Time
+	// DisableGuard turns off the lexical guard (GuardKey). Only for
+	// measurement: without it, entity-swapped questions get wrong answers.
+	DisableGuard bool
 }
 
 // NewSemantic returns a semantic cache.
@@ -94,7 +138,7 @@ func NewSemantic(c SemanticConfig) *Semantic {
 		c.Now = time.Now
 	}
 	return &Semantic{emb: c.Embedder, model: c.Model, threshold: c.Threshold, capacity: c.Capacity,
-		ttl: c.TTL, now: c.Now, scopes: map[string]*semScope{}}
+		ttl: c.TTL, now: c.Now, guard: !c.DisableGuard, scopes: map[string]*semScope{}}
 }
 
 // Match is the result of a lookup.
@@ -113,6 +157,7 @@ func (s *Semantic) Lookup(ctx context.Context, scope, query string) (Match, erro
 		return Match{}, err
 	}
 	v := normalize(vecs[0])
+	g := GuardKey(query)
 	m := Match{Vec: v, Similarity: -1}
 	now := s.now()
 	s.mu.RLock()
@@ -124,7 +169,7 @@ func (s *Semantic) Lookup(ctx context.Context, scope, query string) (Match, erro
 	best := -1
 	for i := range sc.entries {
 		e := &sc.entries[i]
-		if now.After(e.expires) || len(e.vec) != len(v) {
+		if now.After(e.expires) || len(e.vec) != len(v) || (s.guard && e.guard != g) {
 			continue
 		}
 		if sim := dot(v, e.vec); sim > m.Similarity {
@@ -142,7 +187,7 @@ func (s *Semantic) Put(scope string, vec []float32, query string, resp *api.Chat
 	if len(vec) == 0 {
 		return
 	}
-	e := semEntry{vec: vec, query: query, resp: resp, expires: s.now().Add(s.ttl)}
+	e := semEntry{vec: vec, guard: GuardKey(query), query: query, resp: resp, expires: s.now().Add(s.ttl)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sc := s.scopes[scope]
@@ -177,10 +222,20 @@ func normalize(v []float32) []float32 {
 	return out
 }
 
+// dot is the inner product, unrolled with four independent accumulators so
+// the adds pipeline; b is resliced so the compiler drops bounds checks.
 func dot(a, b []float32) float32 {
-	var s float32
-	for i := range a {
-		s += a[i] * b[i]
+	b = b[:len(a)]
+	var s0, s1, s2, s3 float32
+	i := 0
+	for ; i+4 <= len(a); i += 4 {
+		s0 += a[i] * b[i]
+		s1 += a[i+1] * b[i+1]
+		s2 += a[i+2] * b[i+2]
+		s3 += a[i+3] * b[i+3]
 	}
-	return s
+	for ; i < len(a); i++ {
+		s0 += a[i] * b[i]
+	}
+	return s0 + s1 + s2 + s3
 }

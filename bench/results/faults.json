@@ -1,0 +1,205 @@
+{
+  "date": "2026-09-24",
+  "method": "2000 requests per scenario (half streaming), 32 concurrent clients, real HTTP end to end; chain = [a, b]",
+  "scenarios": [
+    {
+      "name": "flaky-503",
+      "description": "a returns 503 on 30% of requests; breaker effectively off",
+      "fault_mode": "503",
+      "fault_rate_on_a": 0.3,
+      "b_down": false,
+      "a_down": false,
+      "breaker": "off",
+      "requests": 2000,
+      "succeeded": 2000,
+      "success_rate": 1,
+      "injected_faults_on_a": 638,
+      "injected_faults_on_a_streaming": 309,
+      "upstream_requests_to_a": 2000,
+      "upstream_requests_to_b": 638,
+      "recoverable_failures": 638,
+      "recovered": 638,
+      "served_by": {
+        "a": 1362,
+        "b": 638
+      },
+      "status_codes": {
+        "200": 2000
+      },
+      "corrupt_responses": 0,
+      "in_band_stream_errors": 0,
+      "latency_p50_ms": 2.746,
+      "latency_p99_ms": 7.316
+    },
+    {
+      "name": "hanging",
+      "description": "a hangs on 30% of requests (never sends a byte); first-byte/request timeout 200ms",
+      "fault_mode": "hang",
+      "fault_rate_on_a": 0.3,
+      "b_down": false,
+      "a_down": false,
+      "breaker": "off",
+      "requests": 2000,
+      "succeeded": 2000,
+      "success_rate": 1,
+      "injected_faults_on_a": 638,
+      "injected_faults_on_a_streaming": 332,
+      "upstream_requests_to_a": 2000,
+      "upstream_requests_to_b": 638,
+      "recoverable_failures": 638,
+      "recovered": 638,
+      "served_by": {
+        "a": 1362,
+        "b": 638
+      },
+      "status_codes": {
+        "200": 2000
+      },
+      "corrupt_responses": 0,
+      "in_band_stream_errors": 0,
+      "latency_p50_ms": 1.4,
+      "latency_p99_ms": 205.107
+    },
+    {
+      "name": "a-down-breaker-off",
+      "description": "a returns 503 on every request; breaker off: every request pays a failed attempt",
+      "fault_mode": "503",
+      "fault_rate_on_a": 1,
+      "b_down": false,
+      "a_down": false,
+      "breaker": "off",
+      "requests": 2000,
+      "succeeded": 2000,
+      "success_rate": 1,
+      "injected_faults_on_a": 2000,
+      "injected_faults_on_a_streaming": 1000,
+      "upstream_requests_to_a": 2000,
+      "upstream_requests_to_b": 2000,
+      "recoverable_failures": 2000,
+      "recovered": 2000,
+      "served_by": {
+        "b": 2000
+      },
+      "status_codes": {
+        "200": 2000
+      },
+      "corrupt_responses": 0,
+      "in_band_stream_errors": 0,
+      "latency_p50_ms": 3.133,
+      "latency_p99_ms": 11.311
+    },
+    {
+      "name": "a-down-breaker-on",
+      "description": "a returns 503 on every request; breaker on (5 failures, 1s cooldown): a is skipped while open",
+      "fault_mode": "503",
+      "fault_rate_on_a": 1,
+      "b_down": false,
+      "a_down": false,
+      "breaker": "on",
+      "requests": 2000,
+      "succeeded": 2000,
+      "success_rate": 1,
+      "injected_faults_on_a": 29,
+      "injected_faults_on_a_streaming": 15,
+      "upstream_requests_to_a": 29,
+      "upstream_requests_to_b": 2000,
+      "recoverable_failures": 2000,
+      "recovered": 2000,
+      "served_by": {
+        "b": 2000
+      },
+      "status_codes": {
+        "200": 2000
+      },
+      "corrupt_responses": 0,
+      "in_band_stream_errors": 0,
+      "latency_p50_ms": 2.459,
+      "latency_p99_ms": 7.063
+    },
+    {
+      "name": "a-refusing",
+      "description": "a refuses TCP connections; breaker on",
+      "fault_mode": "",
+      "fault_rate_on_a": 0,
+      "b_down": false,
+      "a_down": true,
+      "breaker": "on",
+      "requests": 2000,
+      "succeeded": 2000,
+      "success_rate": 1,
+      "injected_faults_on_a": 0,
+      "injected_faults_on_a_streaming": 0,
+      "upstream_requests_to_a": 0,
+      "upstream_requests_to_b": 2000,
+      "recoverable_failures": 2000,
+      "recovered": 2000,
+      "served_by": {
+        "b": 2000
+      },
+      "status_codes": {
+        "200": 2000
+      },
+      "corrupt_responses": 0,
+      "in_band_stream_errors": 0,
+      "latency_p50_ms": 2.519,
+      "latency_p99_ms": 6.572
+    },
+    {
+      "name": "both-dead",
+      "description": "control: no healthy target exists",
+      "fault_mode": "",
+      "fault_rate_on_a": 0,
+      "b_down": true,
+      "a_down": true,
+      "breaker": "on",
+      "requests": 2000,
+      "succeeded": 0,
+      "success_rate": 0,
+      "injected_faults_on_a": 0,
+      "injected_faults_on_a_streaming": 0,
+      "upstream_requests_to_a": 0,
+      "upstream_requests_to_b": 0,
+      "recoverable_failures": 0,
+      "recovered": 0,
+      "served_by": {},
+      "status_codes": {
+        "502": 13,
+        "503": 1987
+      },
+      "corrupt_responses": 0,
+      "in_band_stream_errors": 0,
+      "latency_p50_ms": 0.877,
+      "latency_p99_ms": 2.701
+    },
+    {
+      "name": "midstream",
+      "description": "a drops 30% of streams after the first chunk (not recoverable by design: bytes already sent)",
+      "fault_mode": "midstream",
+      "fault_rate_on_a": 0.3,
+      "b_down": false,
+      "a_down": false,
+      "breaker": "off",
+      "requests": 2000,
+      "succeeded": 1677,
+      "success_rate": 0.8385,
+      "injected_faults_on_a": 638,
+      "injected_faults_on_a_streaming": 323,
+      "upstream_requests_to_a": 2000,
+      "upstream_requests_to_b": 315,
+      "recoverable_failures": 315,
+      "recovered": 315,
+      "served_by": {
+        "a": 1362,
+        "b": 315
+      },
+      "status_codes": {
+        "200": 2000
+      },
+      "corrupt_responses": 0,
+      "in_band_stream_errors": 323,
+      "latency_p50_ms": 2.704,
+      "latency_p99_ms": 7.121
+    }
+  ],
+  "what": "fallback correctness under injected upstream faults"
+}

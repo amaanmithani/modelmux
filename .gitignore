@@ -3,3 +3,4 @@ coverage.out
 /stubllm
 .env
 bench/results/*.tmp
+bench/data/

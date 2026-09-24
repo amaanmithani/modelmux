@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
-      - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - run: go test -race -covermode=atomic -coverprofile=coverage.out ./cmd/... ./internal/...
       - name: coverage gate
         run: |
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')

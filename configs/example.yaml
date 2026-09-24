@@ -56,8 +56,8 @@ cache:
   semantic:
     enabled: true
     embedder: ollama              # any openai-type provider with /embeddings
-    model: nomic-embed-text
-    threshold: 0.92               # cosine similarity; see bench/semantic results
+    model: mxbai-embed-large      # best measured AUC; see bench/results/semantic.json
+    threshold: 0.925              # lowest τ with <=1% false hits on QQP (with the lexical guard)
     capacity_per_scope: 2000
     ttl: 1h
 

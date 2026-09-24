@@ -51,7 +51,8 @@ Packages: `internal/api` (wire types), `internal/provider` (adapters + stub), `i
 ## Complexity
 
 - Routing, auth, rate limit, exact cache: O(1) per request.
-- Semantic cache: flat inner-product scan, O(n·d) per lookup over n entries of dimension d, bounded by a per-scope capacity (default 2,000). Lookup time at capacity is measured and reported; an ANN index is out of scope unless the measurement says it's needed.
+- Semantic cache: flat inner-product scan, O(n·d) per lookup over n entries of dimension d, bounded by a per-scope capacity (default 2,000). Measured: 0.99 ms at 2,000 × 1,024 (vs ~27 ms for the embedding call), so no ANN index.
+- Semantic hits additionally require an equal lexical guard key (leading question word + entity/number tokens): O(q) in query length. Added after the QQP study showed entity swaps score ≈ 1.0 cosine.
 - Memory: O(cache capacity · d) + O(tenants).
 
 ## Stack

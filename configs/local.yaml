@@ -7,6 +7,6 @@ routes:
   - {alias: local, targets: [ollama/llama3.1:8b, stub/fallback]}
 cache:
   exact: {enabled: true}
-  semantic: {enabled: true, embedder: ollama, model: nomic-embed-text, threshold: 0.92}
+  semantic: {enabled: true, embedder: ollama, model: mxbai-embed-large, threshold: 0.925}
 public: {enabled: true}
 usage: {sink: stdout}

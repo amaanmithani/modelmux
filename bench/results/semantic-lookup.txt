@@ -1,0 +1,9 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/amaanmithani/modelmux/internal/cache
+cpu: Apple M1 Pro
+BenchmarkSemanticLookup-8   	    1172	    993401 ns/op	    4270 B/op	       8 allocs/op
+BenchmarkSemanticLookup-8   	    1203	    993567 ns/op	    4331 B/op	       8 allocs/op
+BenchmarkSemanticLookup-8   	    1210	    992794 ns/op	    4300 B/op	       8 allocs/op
+PASS
+ok  	github.com/amaanmithani/modelmux/internal/cache	4.440s

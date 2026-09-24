@@ -1,0 +1,150 @@
+{
+  "what": "added latency of ModelMux vs calling the upstream directly",
+  "method": "k6 constant-arrival-rate 2000 req/s for 30s, 3 alternating rounds per path, median of rounds; stub upstream with fixed 50ms latency over HTTP; caches off; k6, gateway and stub on the same machine",
+  "machine": {
+    "cpu": "Apple M1 Pro",
+    "cores": 8,
+    "os": "macOS-26.6.2-arm64-arm-64bit"
+  },
+  "date": "2026-09-24",
+  "direct_ms": {
+    "p50": 50.163,
+    "p95": 50.268,
+    "p99": 50.557
+  },
+  "gateway_ms": {
+    "p50": 50.305,
+    "p95": 50.475,
+    "p99": 51.081
+  },
+  "achieved_rps": {
+    "direct": 1996.6,
+    "gateway": 1996.5
+  },
+  "failed_rate": {
+    "direct": 0,
+    "gateway": 0
+  },
+  "dropped_iterations": {
+    "direct": 0,
+    "gateway": 0
+  },
+  "rounds": {
+    "direct": [
+      {
+        "label": "direct-1",
+        "target_rps": 2000,
+        "duration": "30s",
+        "achieved_rps": 1996.63419672236,
+        "requests": 60001,
+        "failed_rate": 0,
+        "dropped_iterations": 0,
+        "latency_ms": {
+          "avg": 50.190309661505005,
+          "p50": 50.162,
+          "p90": 50.228,
+          "p95": 50.278,
+          "p99": 50.707,
+          "max": 57.234
+        }
+      },
+      {
+        "label": "direct-2",
+        "target_rps": 2000,
+        "duration": "30s",
+        "achieved_rps": 1996.6365886142298,
+        "requests": 60001,
+        "failed_rate": 0,
+        "dropped_iterations": 0,
+        "latency_ms": {
+          "avg": 50.18573412109721,
+          "p50": 50.163,
+          "p90": 50.218,
+          "p95": 50.255,
+          "p99": 50.557,
+          "max": 57.732
+        }
+      },
+      {
+        "label": "direct-3",
+        "target_rps": 2000,
+        "duration": "30s",
+        "achieved_rps": 1995.6297766681373,
+        "requests": 60001,
+        "failed_rate": 0,
+        "dropped_iterations": 0,
+        "latency_ms": {
+          "avg": 50.19925054582427,
+          "p50": 50.186,
+          "p90": 50.239,
+          "p95": 50.268,
+          "p99": 50.444,
+          "max": 59.831
+        }
+      }
+    ],
+    "gateway": [
+      {
+        "label": "gateway-1",
+        "target_rps": 2000,
+        "duration": "30s",
+        "achieved_rps": 1996.629612278961,
+        "requests": 60001,
+        "failed_rate": 0,
+        "dropped_iterations": 0,
+        "latency_ms": {
+          "avg": 50.3568980850314,
+          "p50": 50.305,
+          "p90": 50.402,
+          "p95": 50.488,
+          "p99": 51.29,
+          "max": 69.416
+        }
+      },
+      {
+        "label": "gateway-2",
+        "target_rps": 2000,
+        "duration": "30s",
+        "achieved_rps": 1995.9113107639666,
+        "requests": 60001,
+        "failed_rate": 0,
+        "dropped_iterations": 0,
+        "latency_ms": {
+          "avg": 50.36876085398547,
+          "p50": 50.32,
+          "p90": 50.418,
+          "p95": 50.475,
+          "p99": 50.983,
+          "max": 75.678
+        }
+      },
+      {
+        "label": "gateway-3",
+        "target_rps": 2000,
+        "duration": "30s",
+        "achieved_rps": 1996.4784038873715,
+        "requests": 60001,
+        "failed_rate": 0,
+        "dropped_iterations": 0,
+        "latency_ms": {
+          "avg": 50.34186536891094,
+          "p50": 50.305,
+          "p90": 50.389,
+          "p95": 50.453,
+          "p99": 51.081,
+          "max": 65.34
+        }
+      }
+    ]
+  },
+  "gateway_process": {
+    "peak_rss_mb": 45.5,
+    "median_cpu_percent": 35.7,
+    "note": "sampled once per second with ps during gateway rounds; 100% = one core"
+  },
+  "overhead_ms": {
+    "p50": 0.142,
+    "p95": 0.207,
+    "p99": 0.524
+  }
+}

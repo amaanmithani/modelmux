@@ -319,8 +319,8 @@ func TestSemanticCache(t *testing.T) {
 		c.Exact = nil
 	})
 	zero := api.Ptr(0.0)
-	f.post(t, "sk-acme", chatBody("fast", "capital of france please", false, zero))
-	resp := f.post(t, "sk-acme", chatBody("fast", "please capital of france", false, zero))
+	f.post(t, "sk-acme", chatBody("fast", "what is the capital of France", false, zero))
+	resp := f.post(t, "sk-acme", chatBody("fast", "what the capital of France is", false, zero))
 	if resp.Header.Get(HeaderCache) != "semantic" || resp.Header.Get(HeaderSimilarity) == "" || f.a.Calls() != 1 {
 		t.Fatalf("semantic hit expected: %v", resp.Header)
 	}
