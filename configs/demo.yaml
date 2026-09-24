@@ -1,0 +1,21 @@
+# Public demo deployment (Render free tier). Anonymous callers are limited per IP.
+listen: ":8080"
+providers:
+  - {name: groq, type: openai, base_url: "https://api.groq.com/openai/v1", api_key_env: GROQ_API_KEY, optional: true}
+  - {name: gemini, type: openai, base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+     api_key_env: GEMINI_API_KEY, stream_usage: false, optional: true}
+  - {name: stub, type: stub, reply: "Both free-tier upstreams are unavailable right now, so ModelMux fell back to its stub provider."}
+routes:
+  - {alias: fast, targets: [groq/llama-3.1-8b-instant, gemini/gemini-2.5-flash, stub/fallback]}
+  - {alias: gemini-first, targets: [gemini/gemini-2.5-flash, groq/llama-3.1-8b-instant, stub/fallback]}
+timeouts: {request: 60s, first_byte: 10s}
+breaker: {failures: 3, cooldown: 30s}
+cache:
+  exact: {enabled: true, capacity: 5000, ttl: 6h}
+public:
+  enabled: true
+  rpm_per_ip: 10
+  daily_tokens_per_ip: 20000
+  models: [fast, gemini-first]
+trusted_proxy_hops: 1
+usage: {sink: stdout}

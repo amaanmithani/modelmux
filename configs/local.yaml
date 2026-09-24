@@ -1,0 +1,12 @@
+# Local development against Ollama, with both caches on.
+listen: "127.0.0.1:8080"
+providers:
+  - {name: ollama, type: openai, base_url: "http://localhost:11434/v1"}
+  - {name: stub, type: stub}
+routes:
+  - {alias: local, targets: [ollama/llama3.1:8b, stub/fallback]}
+cache:
+  exact: {enabled: true}
+  semantic: {enabled: true, embedder: ollama, model: nomic-embed-text, threshold: 0.92}
+public: {enabled: true}
+usage: {sink: stdout}

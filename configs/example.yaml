@@ -1,0 +1,79 @@
+# Full reference config. Every provider type and option, with comments.
+listen: ":8080"
+
+providers:
+  # OpenAI-compatible wire protocol: OpenAI, Groq, Gemini (OpenAI endpoint), Ollama, vLLM.
+  - name: openai
+    type: openai
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    optional: true            # skip (with a warning) if the env var is unset
+  - name: groq
+    type: openai
+    base_url: https://api.groq.com/openai/v1
+    api_key_env: GROQ_API_KEY
+    optional: true
+  - name: gemini
+    type: openai
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY
+    stream_usage: false       # don't send stream_options; usage is estimated if absent
+    optional: true
+  - name: ollama
+    type: openai
+    base_url: http://localhost:11434/v1
+  # Anthropic Messages API, translated to/from OpenAI shape (incl. streaming + tools).
+  - name: claude
+    type: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+    optional: true
+  # In-process stub: deterministic reply, useful as a last-resort fallback in demos.
+  - name: stub
+    type: stub
+    reply: "All upstream models are unavailable right now; this is ModelMux's stub fallback."
+
+routes:
+  - alias: fast
+    targets: [groq/llama-3.1-8b-instant, gemini/gemini-2.5-flash, ollama/llama3.1:8b, stub/fallback]
+  - alias: smart
+    targets: [claude/claude-sonnet-5, openai/gpt-5-mini, groq/llama-3.3-70b-versatile]
+  - alias: local
+    targets: [ollama/llama3.1:8b]
+
+timeouts:
+  request: 120s      # whole non-streaming attempt
+  first_byte: 20s    # streaming: wait for first chunk before falling back
+
+breaker:
+  failures: 5        # consecutive failures that open a provider's breaker
+  cooldown: 30s      # then one probe request is let through
+
+cache:
+  exact:
+    enabled: true
+    capacity: 10000
+    ttl: 1h
+  semantic:
+    enabled: true
+    embedder: ollama              # any openai-type provider with /embeddings
+    model: nomic-embed-text
+    threshold: 0.92               # cosine similarity; see bench/semantic results
+    capacity_per_scope: 2000
+    ttl: 1h
+
+tenants:
+  # key_sha256 = sha256 hex of the API key: `printf %s "$KEY" | shasum -a 256`
+  - name: acme
+    key_sha256: 3f0a377ba0a4a460ecb616f6507ce0d8cfa3e704025d4fda3ed0c5ca05468728
+    monthly_tokens: 5000000
+    rpm: 600
+    models: [fast, smart]
+
+public:
+  enabled: false
+
+trusted_proxy_hops: 0
+
+usage:
+  sink: stdout            # none | stdout | webhook
+  webhook_url_env: USAGE_WEBHOOK_URL

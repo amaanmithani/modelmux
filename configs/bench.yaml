@@ -1,0 +1,8 @@
+# Overhead benchmark: one fixed-latency stub upstream over real HTTP, caches off.
+listen: "127.0.0.1:8080"
+providers:
+  - {name: stub, type: openai, base_url: "http://127.0.0.1:9090/v1"}
+routes:
+  - {alias: bench, targets: [stub/stub-model]}
+public: {enabled: true}
+usage: {sink: none}

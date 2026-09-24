@@ -33,7 +33,7 @@ jobs:
           echo "COVERAGE_MIN=${COVERAGE_MIN}"
           awk -v t="$total" -v m="${COVERAGE_MIN}" 'BEGIN { exit (t+0 < m+0) }'
         env:
-          COVERAGE_MIN: '0' # raised to 85 once internal packages land (task 1.1.2)
+          COVERAGE_MIN: '85'
 
   build:
     needs: test
