@@ -12,6 +12,12 @@ Prometheus metrics. It ships as a single Go binary with no framework.
 
 ![Playground: a request falls back from a failed provider to the next one](docs/img/demo.gif)
 
+## See it running
+
+![Terminal: curl through a local ModelMux, showing fallback, an exact-cache hit and Prometheus metrics](docs/img/fallback-cache-metrics.svg)
+
+*Local run, 2026-09-26: the `fast` route is `[primary, backup]`, where `primary` points at a closed port and `backup` is `cmd/stubllm` (the repo's stub upstream, 300 ms latency). The first request falls back to `backup`; the identical second one is an exact-cache hit in 6 ms; `/metrics` counts both. No model was involved, so the reply text is the stub's.*
+
 ## Why
 
 Every team that ships an LLM feature ends up writing the same glue: retries
