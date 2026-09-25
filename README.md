@@ -1,5 +1,7 @@
 # ModelMux
 
+> **Credits.** Built by Amaan Mithani with Claude (Anthropic) as the AI coding assistant.
+
 [![CI](https://github.com/amaanmithani/modelmux/actions/workflows/ci.yml/badge.svg)](https://github.com/amaanmithani/modelmux/actions/workflows/ci.yml)
 
 One OpenAI-compatible API in front of many LLM providers. Each model name is a
